@@ -15,6 +15,15 @@ from d4rt.test import D4RTTestLit
 from d4rt.data.datamodule import PointOdysseyDataModule
 
 
+def validate_sampling_args(num_queries: int, num_trajs: int) -> None:
+    """Validate query sampling args before dataloader construction."""
+    if num_queries > num_trajs:
+        raise ValueError(
+            f"--num_queries ({num_queries}) must be <= --N ({num_trajs}) "
+            "for PointOdyssey query sampling."
+        )
+
+
 def main():
     parser = argparse.ArgumentParser(description="Test D4RT model")
     
@@ -29,7 +38,7 @@ def main():
     parser.add_argument("--num_queries", type=int, default=2048, help="Number of queries per sample")
     parser.add_argument("--img_size", type=int, default=256, help="Input image size")
     parser.add_argument("--S", type=int, default=8, help="Number of frames per clip")
-    parser.add_argument("--N", type=int, default=32, help="Number of trajectories")
+    parser.add_argument("--N", type=int, default=2048, help="Number of trajectories")
     parser.add_argument(
         "--strides",
         type=int,
@@ -79,6 +88,11 @@ def main():
     parser.add_argument("--output_dir", type=str, default="test_results", help="Output directory for results")
     
     args = parser.parse_args()
+
+    try:
+        validate_sampling_args(args.num_queries, args.N)
+    except ValueError as exc:
+        parser.error(str(exc))
     
     # Create output directory
     os.makedirs(args.output_dir, exist_ok=True)
