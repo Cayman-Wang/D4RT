@@ -1119,6 +1119,7 @@ class PointOdysseyDataset(Dataset):
         gt_2d_tgt = query_data['gt_2d_tgt']  # (num_queries, 2) GT 2D at t_tgt
         gt_visibility_src = query_data['gt_visibility_src']  # (num_queries,) GT visibility at t_src
         gt_visibility_tgt = query_data['gt_visibility_tgt']  # (num_queries,) GT visibility at t_tgt
+        traj_indices = query_data['traj_indices']  # (num_queries,) sampled trajectory indices
         
         # Now convert everything to tensors
         # Convert to float32 and normalize to [0, 1] for model input
@@ -1150,6 +1151,7 @@ class PointOdysseyDataset(Dataset):
         t_src = torch.from_numpy(t_src).long()  # (num_queries,)
         t_tgt = torch.from_numpy(t_tgt).long()  # (num_queries,)
         t_cam = torch.from_numpy(t_cam).long()  # (num_queries,)
+        traj_indices = torch.from_numpy(traj_indices).long()  # (num_queries,)
         
         # Convert GT data to tensors
         gt_3d = torch.from_numpy(gt_3d).float()  # (num_queries, 3) GT 3D at t_tgt in t_cam camera frame
@@ -1184,6 +1186,7 @@ class PointOdysseyDataset(Dataset):
             't_src': t_src,
             't_tgt': t_tgt,
             't_cam': t_cam,
+            'traj_indices': traj_indices,
             # Ground truth data for queries (computed at dataset loading time)
             'gt_3d': gt_3d,  # (num_queries, 3) GT 3D coordinates at t_tgt in t_cam camera frame
             'gt_motion': gt_motion,  # (num_queries, 3) GT displacement from t_src to t_tgt in t_cam camera frame
@@ -1222,6 +1225,7 @@ class PointOdysseyDataset(Dataset):
                 't_src': torch.zeros((self.num_queries,), dtype=torch.long),
                 't_tgt': torch.zeros((self.num_queries,), dtype=torch.long),
                 't_cam': torch.zeros((self.num_queries,), dtype=torch.long),
+                'traj_indices': torch.zeros((self.num_queries,), dtype=torch.long),
                 # Ground truth data for queries
                 'gt_3d': torch.zeros((self.num_queries, 3), dtype=torch.float32),  # GT 3D at t_tgt in t_cam camera frame
                 'gt_motion': torch.zeros((self.num_queries, 3), dtype=torch.float32),  # GT motion from t_src to t_tgt in t_cam camera frame

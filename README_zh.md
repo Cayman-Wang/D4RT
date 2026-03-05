@@ -1,0 +1,459 @@
+# D4RT：4D 重建 Transformer
+
+D4RT（4D Reconstruction Transformer）的实现，用于从视频序列进行 4D 重建。
+
+## 概述
+
+D4RT 是一个基于 Transformer 的 4D 重建模型，采用了：
+- **基于 Query 的解码机制**：相互独立的查询向量，仅对编码器特征进行注意力计算
+- **维度解耦**：在查询向量中解耦空间维度（u, v）与时间维度（t_src, t_tgt, t_cam）
+- **编码器-解码器架构**：ViT 编码器（交替局部/全局注意力）+ 轻量级交叉注意力解码器
+
+## 关键特性
+
+### 编码器
+- Vision Transformer（ViT），在帧内局部注意力与全局自注意力之间交替
+- 额外引入一个 token 用于编码原始视频宽高比
+- 固定方形分辨率（256x256）
+
+### Query 构建
+- 归一化 2D 坐标（u, v）+ Fourier 特征嵌入
+- 三个时间维度采用可学习的离散嵌入：t_src（源帧）、t_tgt（目标帧）、t_cam（相机参考帧）
+- 局部 RGB patch 嵌入（以查询位置为中心的 9x9 patch）
+
+### 解码器
+- 轻量级交叉注意力 Transformer（6-8 层）
+- 独立查询机制：查询之间不相互作用，仅关注编码器特征
+- 输出：通过线性投影得到 3D 坐标
+
+### 损失函数
+- **主损失（L_3D）**：L1 损失，带预处理（按平均深度归一化）与变换（sign(x) * log(1+|x|)）
+- **辅助损失**：
+  - 2D 投影损失
+  - 表面法向余弦相似度损失
+  - 可见性预测（Binary Cross-Entropy）
+  - 运动位移损失
+  - 置信度惩罚（-log(c)）
+
+### 训练策略
+- 每个 batch 随机采样 N=2048 个查询
+- 30% 查询采样自深度不连续区域或运动边界（Sobel 算子）
+- 40% 样本满足 t_tgt = t_cam
+- 优化器：AdamW（weight decay 0.03）
+- 学习率调度：余弦退火（LR：1e-4 → 1e-6）
+
+## 安装与环境准备（先激活环境）
+
+> 下述流程统一采用“先激活环境，再运行脚本”，不使用 `conda run -n d4rt ...`。
+
+```bash
+cd /home/grasp/Desktop/wym-project/4d-gaussgym/D4RT
+conda activate d4rt
+pip install -r requirements.txt
+python -V
+which python
+```
+
+## 项目结构（与动静分离相关）
+
+```
+D4RT/
+├── d4rt/
+│   ├── models/
+│   │   └── d4rt_model.py
+│   ├── data/
+│   │   ├── dataset.py
+│   │   └── datamodule.py
+│   ├── separation/
+│   │   ├── motion_score.py
+│   │   ├── instance_tracker.py
+│   │   └── io_contract.py
+│   ├── train.py
+│   └── test.py
+├── scripts/
+│   ├── train_d4rt.py
+│   ├── test_d4rt.py
+│   ├── export_separation_stream.py
+│   ├── run_separation_replay.py
+│   └── visualize_separation_frame.py
+└── README_zh.md
+```
+
+## 从零运行完整流程：D4RT 4D 重建 → 静态/动态点云分离
+
+### 1) 设置数据路径与输出目录
+
+```bash
+export DATA_ROOT=<你的PointOdyssey根目录>
+export OUT_ROOT=outputs/d4rt_separation_pipeline
+mkdir -p ${OUT_ROOT}
+```
+
+建议先确认数据目录存在：
+
+```bash
+ls ${DATA_ROOT}/train
+ls ${DATA_ROOT}/val
+```
+
+### 2) 从零训练并获取 ckpt（先 smoke 跑通）
+
+> 关键约束：`num_queries <= N`。  
+> 下面这组参数已经在 24G 显存机器上实测可跑通（约 4 分钟/epoch）。  
+> 注意：当前代码里 Query 特征维度默认是 512，请保持 `--decoder_dim 512`。
+
+```bash
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+
+python scripts/train_d4rt.py \
+  --dataset_location ${DATA_ROOT} \
+  --train_dset train \
+  --quick \
+  --S 4 \
+  --N 96 \
+  --num_queries 96 \
+  --img_size 160 \
+  --strides 4 \
+  --clip_step 16 \
+  --encoder_embed_dim 512 \
+  --encoder_depth 6 \
+  --encoder_num_heads 8 \
+  --decoder_dim 512 \
+  --decoder_num_heads 8 \
+  --decoder_num_layers 4 \
+  --batch_size 1 \
+  --num_workers 0 \
+  --max_epochs 1 \
+  --devices 1 \
+  --accelerator gpu \
+  --precision 16-mixed \
+  --log_dir ${OUT_ROOT}/train_smoke
+```
+
+查找并设置 ckpt：
+
+```bash
+find ${OUT_ROOT}/train_smoke -type f -name "*.ckpt"
+export CKPT=$(find ${OUT_ROOT}/train_smoke -type f -name "*.ckpt" | sort | tail -n 1)
+echo ${CKPT}
+```
+
+`--ckpt` 文件即上一步训练产生的 Lightning checkpoint。
+
+### 3) 导出分离输入流（world 坐标）
+
+> `--img_size` 必须与训练时一致（本例是 `160`），否则会出现 checkpoint 位置编码尺寸不匹配。
+
+```bash
+python scripts/export_separation_stream.py \
+  --test_data_path ${DATA_ROOT} \
+  --test_dset val \
+  --ckpt ${CKPT} \
+  --output_npz ${OUT_ROOT}/separation_stream_smoke.npz \
+  --quick \
+  --img_size 160 \
+  --S 4 \
+  --N 96 \
+  --num_queries 96 \
+  --strides 4 \
+  --clip_step 16 \
+  --max_clips 5 \
+  --batch_size 1 \
+  --num_workers 0 \
+  --device auto
+```
+
+### 4) 运行静态/动态点云分离回放
+
+仅统计校验（不落盘每帧）：
+
+```bash
+python scripts/run_separation_replay.py \
+  --input_npz ${OUT_ROOT}/separation_stream_smoke.npz \
+  --output_dir ${OUT_ROOT}/replay_smoke_dry \
+  --dry_run \
+  --save_json
+```
+
+完整落盘（保存每帧分离结果）：
+
+```bash
+python scripts/run_separation_replay.py \
+  --input_npz ${OUT_ROOT}/separation_stream_smoke.npz \
+  --output_dir ${OUT_ROOT}/replay_smoke_full
+```
+
+### 5) 验收检查
+
+```bash
+ls -lh ${OUT_ROOT}/separation_stream_smoke.npz
+ls -lh ${OUT_ROOT}/replay_smoke_dry/summary.json
+ls -lh ${OUT_ROOT}/replay_smoke_full/summary.json
+ls ${OUT_ROOT}/replay_smoke_full/frames | head
+```
+
+请在 `summary.json` 中重点确认：
+
+- `total_static_points > 0`
+- `total_dynamic_points > 0`
+
+### 6) 可视化查看分离后的点云
+
+如果尚未安装可视化依赖：
+
+```bash
+pip install open3d matplotlib
+```
+
+可视化第 0 帧（优先使用 Open3D）：
+
+```bash
+python scripts/visualize_separation_frame.py \
+  --frames_dir ${OUT_ROOT}/replay_smoke_full/frames \
+  --frame_index 0 \
+  --backend open3d
+```
+
+如果你在远程环境没有图形窗口，可改用 matplotlib 并导出图片：
+
+```bash
+python scripts/visualize_separation_frame.py \
+  --frames_dir ${OUT_ROOT}/replay_smoke_full/frames \
+  --frame_index 0 \
+  --backend matplotlib \
+  --save_png ${OUT_ROOT}/replay_smoke_full/frame_000000.png \
+  --no_show
+```
+
+也可以直接指定单个帧文件：
+
+```bash
+python scripts/visualize_separation_frame.py \
+  --frame_npz ${OUT_ROOT}/replay_smoke_full/frames/frame_000000.npz \
+  --backend auto
+```
+
+### 7) 正式训练建议（24G 显存三档参数 + 实测高利用率档）
+
+Smoke 跑通后，建议升级到正式配置。先记住 4 条硬约束：
+
+- 正式训练/导出都不要加 `--quick`
+- 始终满足 `num_queries <= N`
+- 当前代码里请固定 `--decoder_dim 512`
+- 导出参数必须与训练保持一致：`img_size/S/N/num_queries/strides/clip_step`
+
+#### 三档参数（RTX 4090 24G 建议）
+
+- 稳过档（优先稳定）：`img_size=160, S=8, N=512, num_queries=512, encoder=512/6/8, decoder_layers=4, batch_size=2`
+- 均衡档（质量/速度平衡）：`img_size=192, S=8, N=1024, num_queries=1024, encoder=768/12/12, decoder_layers=6, batch_size=2`
+- 冲高档（质量优先）：`img_size=224, S=8, N=1536, num_queries=1536, encoder=1024/16/16, decoder_layers=8, batch_size=2`
+
+#### 实测高利用率档（推荐你当前机器优先尝试）
+
+> 在本机（RTX 4090 24G）`quick` 基准中，这组参数的 GPU 利用率最高且稳定可跑：  
+> 平均利用率约 `26.5%`，P90 约 `44%`，显存峰值约 `15GB`。
+
+- 高利用率档：`img_size=224, S=8, N=512, num_queries=512, encoder=1024/16/16, decoder_layers=8, batch_size=4, num_workers=12`
+
+> 若冲高档 OOM，优先回退到均衡档；若仍不稳，再回退到稳过档。
+
+#### 7.1 选择一档参数（示例：高利用率档）
+
+```bash
+export PROFILE=high_util
+
+# high_util（实测推荐）
+export IMG_SIZE=224
+export S=8
+export N=512
+export NUM_QUERIES=512
+export STRIDES="1 2 4"
+export CLIP_STEP=2
+export ENC_EMBED=1024
+export ENC_DEPTH=16
+export ENC_HEADS=16
+export DEC_DIM=512
+export DEC_HEADS=8
+export DEC_LAYERS=8
+export BATCH_SIZE=4
+export NUM_WORKERS_TRAIN=12
+export NUM_WORKERS_EXPORT=4
+```
+
+改成稳过档时，把上面变量替换为：
+
+```bash
+export PROFILE=stable
+export IMG_SIZE=160
+export S=8
+export N=512
+export NUM_QUERIES=512
+export STRIDES="1 2 4"
+export CLIP_STEP=2
+export ENC_EMBED=512
+export ENC_DEPTH=6
+export ENC_HEADS=8
+export DEC_DIM=512
+export DEC_HEADS=8
+export DEC_LAYERS=4
+export BATCH_SIZE=2
+export NUM_WORKERS_TRAIN=8
+export NUM_WORKERS_EXPORT=4
+```
+
+改成冲高档时，把上面变量替换为：
+
+```bash
+export PROFILE=aggressive
+export IMG_SIZE=224
+export S=8
+export N=1536
+export NUM_QUERIES=1536
+export STRIDES="1 2 4"
+export CLIP_STEP=2
+export ENC_EMBED=1024
+export ENC_DEPTH=16
+export ENC_HEADS=16
+export DEC_DIM=512
+export DEC_HEADS=8
+export DEC_LAYERS=8
+export BATCH_SIZE=2
+export NUM_WORKERS_TRAIN=12
+export NUM_WORKERS_EXPORT=2
+```
+
+改成均衡档时，把上面变量替换为：
+
+```bash
+export PROFILE=balanced
+export IMG_SIZE=192
+export S=8
+export N=1024
+export NUM_QUERIES=1024
+export STRIDES="1 2 4"
+export CLIP_STEP=2
+export ENC_EMBED=768
+export ENC_DEPTH=12
+export ENC_HEADS=12
+export DEC_DIM=512
+export DEC_HEADS=8
+export DEC_LAYERS=6
+export BATCH_SIZE=2
+export NUM_WORKERS_TRAIN=12
+export NUM_WORKERS_EXPORT=4
+```
+
+#### 7.2 统一训练命令（按当前档位变量执行）
+
+```bash
+export OUT_ROOT=outputs/d4rt_formal_${PROFILE}
+mkdir -p ${OUT_ROOT}
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+
+python scripts/train_d4rt.py \
+  --dataset_location ${DATA_ROOT} \
+  --train_dset train \
+  --S ${S} \
+  --N ${N} \
+  --num_queries ${NUM_QUERIES} \
+  --img_size ${IMG_SIZE} \
+  --strides ${STRIDES} \
+  --clip_step ${CLIP_STEP} \
+  --encoder_embed_dim ${ENC_EMBED} \
+  --encoder_depth ${ENC_DEPTH} \
+  --encoder_num_heads ${ENC_HEADS} \
+  --decoder_dim ${DEC_DIM} \
+  --decoder_num_heads ${DEC_HEADS} \
+  --decoder_num_layers ${DEC_LAYERS} \
+  --batch_size ${BATCH_SIZE} \
+  --num_workers ${NUM_WORKERS_TRAIN} \
+  --max_epochs 20 \
+  --devices 1 \
+  --accelerator gpu \
+  --precision 16-mixed \
+  --log_dir ${OUT_ROOT}/train
+```
+
+如需每个 epoch 做验证，可额外加上：`--val_dset val --use_val`（会略微降低训练吞吐）。
+
+#### 7.3 导出与分离（按当前档位变量执行）
+
+```bash
+export CKPT=$(find ${OUT_ROOT}/train -type f -name "*.ckpt" | sort | tail -n 1)
+echo ${CKPT}
+
+python scripts/export_separation_stream.py \
+  --test_data_path ${DATA_ROOT} \
+  --test_dset val \
+  --ckpt ${CKPT} \
+  --output_npz ${OUT_ROOT}/separation_stream.npz \
+  --img_size ${IMG_SIZE} \
+  --S ${S} \
+  --N ${N} \
+  --num_queries ${NUM_QUERIES} \
+  --strides ${STRIDES} \
+  --clip_step ${CLIP_STEP} \
+  --batch_size 1 \
+  --num_workers ${NUM_WORKERS_EXPORT} \
+  --device auto
+
+python scripts/run_separation_replay.py \
+  --input_npz ${OUT_ROOT}/separation_stream.npz \
+  --output_dir ${OUT_ROOT}/replay_full
+```
+
+## 脚本输入输出契约
+
+### `scripts/export_separation_stream.py`
+
+输出 NPZ 主键：
+
+- `points_world`：`(T, N, 3)`
+- `motion_world`：`(T, N, 3)`
+- `confidence`：`(T, N)`
+- `visibility`：`(T, N)`
+- `point_ids`：`(T, N)`
+- `timestamps`：`(T,)`
+
+（另含辅助键：`valid_mask`, `frame_point_counts`, `clip_indices`, `clip_frame_indices`, `annotation_paths`）
+
+### `scripts/run_separation_replay.py`
+
+输入：读取上面的 NPZ 主键。  
+输出：
+
+- `summary.json`
+- `frames/frame_*.npz`（非 `--dry_run`）
+
+## 测试场景与验收标准
+
+- 场景 A：GPU smoke（`max_epochs=1, S=4, N=96, num_queries=96, img_size=160`）能完整跑通三阶段流程。
+- 场景 B：`--dry_run --save_json` 仅生成统计 JSON，不生成逐帧 NPZ。
+- 场景 C：full-run 生成 `frames/frame_*.npz`。
+- 场景 D（CPU 兜底）：
+  - 训练：将 `--accelerator gpu` 改为 `--accelerator cpu`
+  - 导出：将 `--device auto` 改为 `--device cpu`
+
+## 常见问题排查（FAQ）
+
+1. 报错：`--num_queries (...) must be <= --N (...)`
+   - 处理：确保 `N >= num_queries`（例如都设为 256）。
+
+2. 找不到 `*.ckpt`
+   - 处理：先执行 `find ${OUT_ROOT}/train_smoke -type f -name "*.ckpt"`；若为空，检查训练是否完成或 `--log_dir` 是否正确。
+
+3. CUDA 不可用
+   - 处理：使用 CPU 兜底参数继续 smoke 验证（见上节场景 D）。
+
+4. 数据集路径错误或为空
+   - 处理：先检查 `${DATA_ROOT}/train` 与 `${DATA_ROOT}/val` 是否存在并含数据。
+
+## 默认假设
+
+- 数据集为 PointOdyssey 格式。
+- 先 smoke 再正式训练，优先保证流程跑通。
+- 动静分离链路基于当前仓库中的 `export_separation_stream.py` 与 `run_separation_replay.py`。
+
+## 引用
+
+如果你使用了本代码，请引用 D4RT 论文。

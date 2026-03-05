@@ -5,9 +5,34 @@ PyTorch Lightning DataModule for D4RT
 import torch
 from torch.utils.data import DataLoader
 import lightning as L
-from typing import Optional
+from typing import Any, Dict, Optional
 
 from .dataset import D4RTDataset, PointOdysseyDataset
+
+
+def _resolve_loader_runtime_kwargs(
+    num_workers: int,
+    pin_memory: bool,
+    persistent_workers: Optional[bool],
+    prefetch_factor: Optional[int],
+) -> Dict[str, Any]:
+    """Build DataLoader runtime kwargs with safe defaults."""
+    if num_workers < 0:
+        raise ValueError("num_workers must be >= 0.")
+    if prefetch_factor is not None and prefetch_factor < 1:
+        raise ValueError("prefetch_factor must be >= 1 when provided.")
+
+    loader_kwargs: Dict[str, Any] = {
+        "num_workers": int(num_workers),
+        "pin_memory": bool(pin_memory),
+    }
+    if num_workers > 0:
+        loader_kwargs["persistent_workers"] = (
+            True if persistent_workers is None else bool(persistent_workers)
+        )
+        if prefetch_factor is not None:
+            loader_kwargs["prefetch_factor"] = int(prefetch_factor)
+    return loader_kwargs
 
 
 class D4RTDataModule(L.LightningDataModule):
@@ -23,6 +48,8 @@ class D4RTDataModule(L.LightningDataModule):
         batch_size: int = 1,
         num_workers: int = 4,
         pin_memory: bool = True,
+        persistent_workers: Optional[bool] = None,
+        prefetch_factor: Optional[int] = 2,
         **dataset_kwargs
     ):
         super().__init__()
@@ -34,7 +61,15 @@ class D4RTDataModule(L.LightningDataModule):
         self.batch_size = batch_size
         self.num_workers = num_workers
         self.pin_memory = pin_memory
+        self.persistent_workers = persistent_workers
+        self.prefetch_factor = prefetch_factor
         self.dataset_kwargs = dataset_kwargs
+        self.loader_runtime_kwargs = _resolve_loader_runtime_kwargs(
+            num_workers=self.num_workers,
+            pin_memory=self.pin_memory,
+            persistent_workers=self.persistent_workers,
+            prefetch_factor=self.prefetch_factor,
+        )
     
     def setup(self, stage: str):
         if stage == "fit" or stage is None:
@@ -80,9 +115,8 @@ class D4RTDataModule(L.LightningDataModule):
             self.train_dataset,
             batch_size=self.batch_size,
             shuffle=True,
-            num_workers=self.num_workers,
-            pin_memory=self.pin_memory,
-            collate_fn=self._collate_fn
+            collate_fn=self._collate_fn,
+            **self.loader_runtime_kwargs,
         )
     
     def val_dataloader(self):
@@ -90,9 +124,8 @@ class D4RTDataModule(L.LightningDataModule):
             self.val_dataset,
             batch_size=self.batch_size,
             shuffle=False,
-            num_workers=self.num_workers,
-            pin_memory=self.pin_memory,
-            collate_fn=self._collate_fn
+            collate_fn=self._collate_fn,
+            **self.loader_runtime_kwargs,
         )
     
     def test_dataloader(self):
@@ -100,9 +133,8 @@ class D4RTDataModule(L.LightningDataModule):
             self.test_dataset,
             batch_size=self.batch_size,
             shuffle=False,
-            num_workers=self.num_workers,
-            pin_memory=self.pin_memory,
-            collate_fn=self._collate_fn
+            collate_fn=self._collate_fn,
+            **self.loader_runtime_kwargs,
         )
     
     def _collate_fn(self, batch):
@@ -141,6 +173,8 @@ class PointOdysseyDataModule(L.LightningDataModule):
         batch_size=1,
         num_workers=4,
         pin_memory=True,
+        persistent_workers: Optional[bool] = None,
+        prefetch_factor: Optional[int] = 2,
     ):
         super().__init__()
         self.dataset_location = dataset_location
@@ -161,6 +195,14 @@ class PointOdysseyDataModule(L.LightningDataModule):
         self.batch_size = batch_size
         self.num_workers = num_workers
         self.pin_memory = pin_memory
+        self.persistent_workers = persistent_workers
+        self.prefetch_factor = prefetch_factor
+        self.loader_runtime_kwargs = _resolve_loader_runtime_kwargs(
+            num_workers=self.num_workers,
+            pin_memory=self.pin_memory,
+            persistent_workers=self.persistent_workers,
+            prefetch_factor=self.prefetch_factor,
+        )
     
     def setup(self, stage: str):
         if stage == "fit" or stage is None:
@@ -230,9 +272,8 @@ class PointOdysseyDataModule(L.LightningDataModule):
             self.train_dataset,
             batch_size=self.batch_size,
             shuffle=True,
-            num_workers=self.num_workers,
-            pin_memory=self.pin_memory,
-            collate_fn=self._collate_fn_pointodyssey
+            collate_fn=self._collate_fn_pointodyssey,
+            **self.loader_runtime_kwargs,
         )
     
     def val_dataloader(self):
@@ -254,9 +295,8 @@ class PointOdysseyDataModule(L.LightningDataModule):
             self.val_dataset,
             batch_size=self.batch_size,
             shuffle=False,
-            num_workers=self.num_workers,
-            pin_memory=self.pin_memory,
-            collate_fn=self._collate_fn_pointodyssey
+            collate_fn=self._collate_fn_pointodyssey,
+            **self.loader_runtime_kwargs,
         )
     
     def test_dataloader(self):
@@ -264,9 +304,8 @@ class PointOdysseyDataModule(L.LightningDataModule):
             self.test_dataset,
             batch_size=self.batch_size,
             shuffle=False,
-            num_workers=self.num_workers,
-            pin_memory=self.pin_memory,
-            collate_fn=self._collate_fn_pointodyssey
+            collate_fn=self._collate_fn_pointodyssey,
+            **self.loader_runtime_kwargs,
         )
     
     def _collate_fn_pointodyssey(self, batch):
@@ -291,4 +330,3 @@ class PointOdysseyDataModule(L.LightningDataModule):
                 collated[key] = [item[key] for item in valid_samples]
         
         return collated
-

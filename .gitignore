@@ -44,6 +44,17 @@ wandb/
 runs/
 events.out.tfevents*
 
+# Evaluation / inference outputs
+test_results/
+outputs/
+results/
+predictions/
+separation_replay/
+replay_outputs/
+*_results/
+*_outputs/
+*.npz
+
 # Model checkpoints and large artifacts
 checkpoints/
 *.ckpt
@@ -55,3 +66,4 @@ checkpoints/
 tmp/
 temp/
 *.tmp
+d4rt/data/__pycache__/datamodule.cpython-313.pyc
