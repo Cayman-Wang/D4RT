@@ -382,6 +382,7 @@ class PointOdysseyDataset(Dataset):
             t_tgt: (num_queries,) target frame indices
             t_cam: (num_queries,) camera reference frame indices
             gt_3d: (num_queries, 3) GT 3D coordinates at t_tgt in t_cam camera frame
+            gt_motion: (num_queries, 3) GT displacement from t_src to t_tgt in t_cam camera frame
             gt_2d_src: (num_queries, 2) GT 2D coordinates at t_src (from trajs_2d)
             gt_2d_tgt: (num_queries, 2) GT 2D coordinates at t_tgt (from trajs_2d)
             gt_visibility_src: (num_queries,) GT visibility at t_src (from visibs)
@@ -483,6 +484,7 @@ class PointOdysseyDataset(Dataset):
         # Extract coordinates and GT data for sampled trajectories
         coords_uv = np.zeros((self.num_queries, 2), dtype=np.float32)
         gt_3d = np.zeros((self.num_queries, 3), dtype=np.float32)
+        gt_motion = np.zeros((self.num_queries, 3), dtype=np.float32)
         gt_2d_src = np.zeros((self.num_queries, 2), dtype=np.float32)
         gt_2d_tgt = np.zeros((self.num_queries, 2), dtype=np.float32)
         gt_visibility_src = np.zeros(self.num_queries, dtype=np.float32)
@@ -500,8 +502,9 @@ class PointOdysseyDataset(Dataset):
             coords_uv[i, 1] = coords_2d_src[1] / H  # normalize v
             
             # Extract GT 3D coordinates: t_tgt时刻的世界坐标，转换到t_cam时刻的相机坐标系
-            # 1. Get 3D world coordinates at t_tgt
-            point_world = trajs_world[t_tgt_i, n]  # (3,) world coordinates at t_tgt
+            # 1. Get 3D world coordinates at t_src and t_tgt
+            point_world_src = trajs_world[t_src_i, n]  # (3,) world coordinates at t_src
+            point_world_tgt = trajs_world[t_tgt_i, n]  # (3,) world coordinates at t_tgt
             
             # 2. Get world-to-camera transformation at t_cam
             # cams_T_world[t] transforms from world to camera coordinates at frame t
@@ -509,11 +512,15 @@ class PointOdysseyDataset(Dataset):
             cam_T_world = cams_T_world[t_cam_i]  # (4, 4) world-to-camera transformation at t_cam
             
             # 3. Transform point from world to camera coordinates
-            point_world_homo = np.concatenate([point_world, np.array([1.0])])  # (4,)
-            point_cam_homo = cam_T_world @ point_world_homo  # (4,)
-            point_cam = point_cam_homo[:3] / (point_cam_homo[3] + 1e-8)  # (3,)
-            
-            gt_3d[i] = point_cam
+            point_world_tgt_homo = np.concatenate([point_world_tgt, np.array([1.0])])  # (4,)
+            point_world_src_homo = np.concatenate([point_world_src, np.array([1.0])])  # (4,)
+            point_tgt_cam_homo = cam_T_world @ point_world_tgt_homo  # (4,)
+            point_src_cam_homo = cam_T_world @ point_world_src_homo  # (4,)
+            point_tgt_cam = point_tgt_cam_homo[:3] / (point_tgt_cam_homo[3] + 1e-8)  # (3,)
+            point_src_cam = point_src_cam_homo[:3] / (point_src_cam_homo[3] + 1e-8)  # (3,)
+
+            gt_3d[i] = point_tgt_cam
+            gt_motion[i] = point_tgt_cam - point_src_cam
             
             # Extract GT 2D coordinates (pixel coordinates)
             gt_2d_src[i] = trajs_2d[t_src_i, n]  # (2,) pixel coordinates at t_src
@@ -529,6 +536,7 @@ class PointOdysseyDataset(Dataset):
             't_tgt': t_tgt,
             't_cam': t_cam,
             'gt_3d': gt_3d,  # (num_queries, 3) 3D coordinates at t_tgt in t_cam camera frame
+            'gt_motion': gt_motion,  # (num_queries, 3) displacement from t_src to t_tgt in t_cam camera frame
             'gt_2d_src': gt_2d_src,
             'gt_2d_tgt': gt_2d_tgt,
             'gt_visibility_src': gt_visibility_src,
@@ -1106,6 +1114,7 @@ class PointOdysseyDataset(Dataset):
         t_tgt = query_data['t_tgt']  # (num_queries,)
         t_cam = query_data['t_cam']  # (num_queries,)
         gt_3d = query_data['gt_3d']  # (num_queries, 3) GT 3D at t_tgt in t_cam camera frame
+        gt_motion = query_data['gt_motion']  # (num_queries, 3) GT motion from t_src to t_tgt in t_cam camera frame
         gt_2d_src = query_data['gt_2d_src']  # (num_queries, 2) GT 2D at t_src
         gt_2d_tgt = query_data['gt_2d_tgt']  # (num_queries, 2) GT 2D at t_tgt
         gt_visibility_src = query_data['gt_visibility_src']  # (num_queries,) GT visibility at t_src
@@ -1144,6 +1153,7 @@ class PointOdysseyDataset(Dataset):
         
         # Convert GT data to tensors
         gt_3d = torch.from_numpy(gt_3d).float()  # (num_queries, 3) GT 3D at t_tgt in t_cam camera frame
+        gt_motion = torch.from_numpy(gt_motion).float()  # (num_queries, 3) GT motion from t_src to t_tgt in t_cam camera frame
         gt_2d_src = torch.from_numpy(gt_2d_src).float()  # (num_queries, 2)
         gt_2d_tgt = torch.from_numpy(gt_2d_tgt).float()  # (num_queries, 2)
         gt_visibility_src = torch.from_numpy(gt_visibility_src).float()  # (num_queries,)
@@ -1176,6 +1186,7 @@ class PointOdysseyDataset(Dataset):
             't_cam': t_cam,
             # Ground truth data for queries (computed at dataset loading time)
             'gt_3d': gt_3d,  # (num_queries, 3) GT 3D coordinates at t_tgt in t_cam camera frame
+            'gt_motion': gt_motion,  # (num_queries, 3) GT displacement from t_src to t_tgt in t_cam camera frame
             'gt_2d_src': gt_2d_src,  # (num_queries, 2) GT 2D coordinates at t_src
             'gt_2d_tgt': gt_2d_tgt,  # (num_queries, 2) GT 2D coordinates at t_tgt (for training)
             'gt_visibility_src': gt_visibility_src,  # (num_queries,) GT visibility at t_src
@@ -1213,6 +1224,7 @@ class PointOdysseyDataset(Dataset):
                 't_cam': torch.zeros((self.num_queries,), dtype=torch.long),
                 # Ground truth data for queries
                 'gt_3d': torch.zeros((self.num_queries, 3), dtype=torch.float32),  # GT 3D at t_tgt in t_cam camera frame
+                'gt_motion': torch.zeros((self.num_queries, 3), dtype=torch.float32),  # GT motion from t_src to t_tgt in t_cam camera frame
                 'gt_2d_src': torch.zeros((self.num_queries, 2), dtype=torch.float32),
                 'gt_2d_tgt': torch.zeros((self.num_queries, 2), dtype=torch.float32),
                 'gt_visibility_src': torch.zeros((self.num_queries,), dtype=torch.float32),

@@ -18,20 +18,20 @@ class D4RTTestLit(L.LightningModule):
         # Model config (should match training config)
         img_size=256,
         patch_size=16,
-        encoder_embed_dim=768,
-        encoder_depth=12,
-        encoder_num_heads=12,
+        encoder_embed_dim=1408,
+        encoder_depth=40,
+        encoder_num_heads=16,
         decoder_dim=512,
         decoder_num_heads=8,
-        decoder_num_layers=6,
+        decoder_num_layers=8,
         max_frames=100,
         # Loss config (for evaluation metrics)
         lambda_3d=1.0,
         lambda_2d=0.1,
-        lambda_normal=0.1,
+        lambda_normal=0.5,
         lambda_visibility=0.1,
         lambda_motion=0.1,
-        lambda_confidence=0.01,
+        lambda_confidence=0.2,
         # Model checkpoint path
         checkpoint_path: Optional[str] = None,
         **kwargs
@@ -97,31 +97,82 @@ class D4RTTestLit(L.LightningModule):
         )
         
         return outputs
+
+    def extract_gt_data(self, batch):
+        """
+        Extract GT query data with the same priority as training:
+        1) dataset-provided query GT (preferred),
+        2) fallback legacy fields.
+        """
+        gt_3d = batch.get('gt_3d')
+        if gt_3d is not None:
+            gt_2d = batch.get('gt_2d_tgt')
+            if gt_2d is None:
+                gt_2d = batch.get('gt_2d')
+
+            gt_visibility = batch.get('gt_visibility_tgt')
+            if gt_visibility is None:
+                gt_visibility = batch.get('gt_visibility')
+
+            if gt_visibility is None:
+                gt_visibility = torch.ones(
+                    gt_3d.shape[:2], device=gt_3d.device, dtype=gt_3d.dtype
+                )
+            elif gt_visibility.dim() == 3:
+                gt_visibility = gt_visibility.squeeze(-1)
+
+            gt_visibility = gt_visibility.float()
+            finite_mask = torch.isfinite(gt_3d).all(dim=-1)
+            depth_mask = gt_3d[:, :, 2] > 1e-6
+            visibility_mask = gt_visibility > 0.5
+            mask = finite_mask & depth_mask & visibility_mask
+
+            return {
+                'gt_3d': gt_3d,
+                'gt_2d': gt_2d,
+                'gt_visibility': gt_visibility,
+                'mask': mask,
+            }
+
+        return {
+            'gt_3d': batch.get('gt_3d'),
+            'gt_2d': batch.get('gt_2d'),
+            'gt_visibility': batch.get('gt_visibility'),
+            'mask': batch.get('mask'),
+        }
     
     def test_step(self, batch, batch_idx):
         """Test step"""
         outputs = self.forward(batch)
         pred_3d = outputs['coords_3d']
-        query_features = outputs['query_features']
-        
-        gt_3d = batch.get('gt_3d')
-        gt_2d = batch.get('gt_2d')
-        intrinsics = batch.get('intrinsics')
+        pred_2d = outputs.get('coords_2d')
+        pred_visibility_logits = outputs.get('visibility_logits')
+        pred_motion = outputs.get('motion')
+        pred_normal = outputs.get('normal')
+        pred_confidence = outputs.get('confidence')
+
+        gt_data = self.extract_gt_data(batch)
+        gt_3d = gt_data['gt_3d']
+        gt_2d = gt_data['gt_2d']
+        gt_visibility = gt_data['gt_visibility']
+        mask = gt_data['mask']
+
         gt_normal = batch.get('gt_normal')
-        gt_visibility = batch.get('gt_visibility')
         gt_motion = batch.get('gt_motion')
-        mask = batch.get('mask')
         
         # Compute losses for evaluation
         losses = self.criterion(
             pred_3d=pred_3d,
-            query_features=query_features,
+            pred_2d=pred_2d,
+            pred_visibility_logits=pred_visibility_logits,
+            pred_motion=pred_motion,
+            pred_normal=pred_normal,
+            pred_confidence=pred_confidence,
             gt_3d=gt_3d,
             gt_2d=gt_2d,
-            intrinsics=intrinsics,
-            gt_normal=gt_normal,
             gt_visibility=gt_visibility,
             gt_motion=gt_motion,
+            gt_normal=gt_normal,
             mask=mask
         )
         
@@ -158,4 +209,3 @@ class D4RTTestLit(L.LightningModule):
             'losses': {k: v.detach().cpu() for k, v in losses.items()},
             'metrics': metrics
         }
-

@@ -100,82 +100,119 @@ class D4RTTrainLit(L.LightningModule):
         
         return outputs
     
-    def extract_gt_data(self, batch):
+    def _extract_gt_data_from_queries(self, batch):
+        """Extract query-level GT directly from dataset-provided fields."""
+        gt_3d = batch.get('gt_3d')
+        if gt_3d is None:
+            return None
+
+        # PointOdysseyDataset returns target-frame 2D / visibility with *_tgt suffix.
+        gt_2d = batch.get('gt_2d_tgt')
+        if gt_2d is None:
+            gt_2d = batch.get('gt_2d')
+
+        gt_visibility = batch.get('gt_visibility_tgt')
+        if gt_visibility is None:
+            gt_visibility = batch.get('gt_visibility')
+
+        if gt_visibility is None:
+            gt_visibility = torch.ones(
+                gt_3d.shape[:2], device=gt_3d.device, dtype=gt_3d.dtype
+            )
+        elif gt_visibility.dim() == 3:
+            gt_visibility = gt_visibility.squeeze(-1)
+
+        gt_visibility = gt_visibility.float()
+
+        # Query mask: visible + valid finite geometry + positive depth.
+        finite_mask = torch.isfinite(gt_3d).all(dim=-1)
+        depth_mask = gt_3d[:, :, 2] > 1e-6
+        visibility_mask = gt_visibility > 0.5
+        mask = finite_mask & depth_mask & visibility_mask
+
+        return {
+            'gt_3d': gt_3d,
+            'gt_2d': gt_2d,
+            'gt_visibility': gt_visibility,
+            'mask': mask,
+        }
+
+    def _extract_gt_data_from_depth(self, batch):
         """
-        Extract ground truth data from PointOdysseyDataset batch format
-        
-        Since queries are randomly sampled coordinates (not from trajectories),
-        we extract GT by unprojecting depth maps at query locations.
-        
-        Args:
-            batch: batch dictionary from PointOdysseyDataset
-            
-        Returns:
-            Dictionary with gt_3d, gt_2d, intrinsics, gt_visibility, mask
+        Fallback GT extraction from depth + intrinsics.
+
+        This keeps compatibility for datasets that do not provide query-level GT fields.
         """
-        # Get data from batch
-        depths = batch.get('depths')        # (B, S, 1, H, W) or (B, S, H, W)
+        depths = batch.get('depths')  # (B, S, 1, H, W) or (B, S, H, W)
         pix_T_cams = batch.get('pix_T_cams')  # (B, S, 3, 3)
-        coords_uv = batch['coords_uv']      # (B, num_queries, 2) normalized [0,1]
-        t_tgt = batch['t_tgt']              # (B, num_queries)
-        
+        coords_uv = batch.get('coords_uv')  # (B, num_queries, 2) normalized [0,1]
+        t_tgt = batch.get('t_tgt')  # (B, num_queries)
+
+        if depths is None or pix_T_cams is None or coords_uv is None or t_tgt is None:
+            raise ValueError(
+                'Batch is missing query-level GT and fallback depth/intrinsics fields.'
+            )
+
         B, S = depths.shape[:2]
         if len(depths.shape) == 5:
-            # (B, S, 1, H, W) -> (B, S, H, W)
-            depths = depths.squeeze(2)
+            depths = depths.squeeze(2)  # (B, S, 1, H, W) -> (B, S, H, W)
         H, W = depths.shape[2:4]
         num_queries = coords_uv.shape[1]
-        
-        # Convert normalized coordinates to pixel coordinates
-        coords_pix = coords_uv * torch.tensor([W, H], device=coords_uv.device, dtype=coords_uv.dtype)  # (B, num_queries, 2)
-        u_pix = coords_pix[:, :, 0].long()  # (B, num_queries)
-        v_pix = coords_pix[:, :, 1].long()  # (B, num_queries)
-        u_pix = torch.clamp(u_pix, 0, W - 1)
-        v_pix = torch.clamp(v_pix, 0, H - 1)
-        
-        # Clamp t_tgt to valid range
+
+        coords_pix = coords_uv * torch.tensor(
+            [W, H], device=coords_uv.device, dtype=coords_uv.dtype
+        )  # (B, num_queries, 2)
+        u_pix = torch.clamp(coords_pix[:, :, 0].long(), 0, W - 1)  # (B, num_queries)
+        v_pix = torch.clamp(coords_pix[:, :, 1].long(), 0, H - 1)  # (B, num_queries)
+
         t_tgt_clamped = torch.clamp(t_tgt, 0, S - 1)  # (B, num_queries)
-        batch_indices = torch.arange(B, device=depths.device).unsqueeze(1).expand(B, num_queries)  # (B, num_queries)
-        
-        # Extract depth values at query locations
+        batch_indices = (
+            torch.arange(B, device=depths.device).unsqueeze(1).expand(B, num_queries)
+        )  # (B, num_queries)
+
         depth_values = depths[batch_indices, t_tgt_clamped, v_pix, u_pix]  # (B, num_queries)
-        
-        # Extract intrinsics for target frames
-        intrinsics_per_query = pix_T_cams[batch_indices, t_tgt_clamped]  # (B, num_queries, 3, 3)
-        # Use intrinsics from first query (assuming same intrinsics within a frame)
+
+        intrinsics_per_query = pix_T_cams[
+            batch_indices, t_tgt_clamped
+        ]  # (B, num_queries, 3, 3)
         intrinsics = intrinsics_per_query[:, 0]  # (B, 3, 3)
-        
-        # Unproject to 3D: convert pixel coordinates + depth to 3D camera coordinates
+
         fx = intrinsics[:, 0, 0].unsqueeze(1)  # (B, 1)
         fy = intrinsics[:, 1, 1].unsqueeze(1)  # (B, 1)
         cx = intrinsics[:, 0, 2].unsqueeze(1)  # (B, 1)
         cy = intrinsics[:, 1, 2].unsqueeze(1)  # (B, 1)
-        
-        # Convert to float for computation
+
         u_float = coords_pix[:, :, 0]  # (B, num_queries)
         v_float = coords_pix[:, :, 1]  # (B, num_queries)
-        
-        # Unproject: x = (u - cx) * z / fx, y = (v - cy) * z / fy, z = depth
+
         z = depth_values  # (B, num_queries)
         x = (u_float - cx) * z / fx  # (B, num_queries)
         y = (v_float - cy) * z / fy  # (B, num_queries)
-        
+
         gt_3d = torch.stack([x, y, z], dim=-1)  # (B, num_queries, 3)
-        gt_2d = coords_pix  # (B, num_queries, 2) - use pixel coordinates as GT 2D
-        
-        # Create mask based on valid depth values (non-zero, reasonable range)
+        gt_2d = coords_pix  # (B, num_queries, 2)
         mask = (depth_values > 1e-3) & (depth_values < 1000.0)  # (B, num_queries)
-        
-        # Visibility: assume visible if depth is valid (can be improved with actual visibility data)
         gt_visibility = mask.float()  # (B, num_queries)
-        
+
         return {
             'gt_3d': gt_3d,
             'gt_2d': gt_2d,
-            'intrinsics': intrinsics,
             'gt_visibility': gt_visibility,
-            'mask': mask
+            'mask': mask,
         }
+
+    def extract_gt_data(self, batch):
+        """
+        Extract ground-truth query data.
+
+        Priority:
+        1) Query-level GT from dataset (preferred, semantically consistent).
+        2) Fallback depth unprojection for legacy inputs.
+        """
+        query_gt = self._extract_gt_data_from_queries(batch)
+        if query_gt is not None:
+            return query_gt
+        return self._extract_gt_data_from_depth(batch)
     
     def training_step(self, batch, batch_idx):
         """Training step"""
@@ -195,7 +232,7 @@ class D4RTTrainLit(L.LightningModule):
         gt_visibility = gt_data['gt_visibility']
         mask = gt_data['mask']
         
-        # Optional: gt_normal, gt_motion (not available in PointOdysseyDataset)
+        # Optional GT branches.
         gt_normal = batch.get('gt_normal')
         gt_motion = batch.get('gt_motion')
         
@@ -237,7 +274,7 @@ class D4RTTrainLit(L.LightningModule):
         gt_visibility = gt_data['gt_visibility']
         mask = gt_data['mask']
         
-        # Optional: gt_normal, gt_motion (not available in PointOdysseyDataset)
+        # Optional GT branches.
         gt_normal = batch.get('gt_normal')
         gt_motion = batch.get('gt_motion')
         
@@ -311,4 +348,3 @@ class D4RTTrainLit(L.LightningModule):
                 'frequency': 1
             }
         }
-
