@@ -1,0 +1,65 @@
+import tempfile
+import unittest
+from pathlib import Path
+
+import numpy as np
+
+from d4rt.separation.io_contract import (
+    DynamicMeshInfo,
+    SeparationFrame,
+    load_frame_npz,
+    save_frame_npz,
+)
+
+
+class TestIOContract(unittest.TestCase):
+    def test_separation_frame_roundtrip_npz(self):
+        frame = SeparationFrame(
+            timestamp=12.5,
+            static_points_world=np.array(
+                [[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]], dtype=np.float32
+            ),
+            dynamic_points_world=np.array(
+                [[0.1, 0.2, 0.3], [2.0, 2.1, 2.2], [3.0, 3.1, 3.2]], dtype=np.float32
+            ),
+            dynamic_instance_ids=np.array([7, 7, 9], dtype=np.int64),
+            dynamic_scores=np.array([0.8, 0.9, 0.75], dtype=np.float32),
+            confidence=np.array([0.95, 0.90, 0.85], dtype=np.float32),
+            visibility=np.array([0.99, 0.85, 0.88], dtype=np.float32),
+            static_mesh_path="meshes/static_001.ply",
+            dynamic_meshes=[
+                DynamicMeshInfo(instance_id=7, mesh_path="meshes/dyn_007.ply", pose=np.eye(4)),
+            ],
+        )
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            out_path = Path(tmp_dir) / "frame_000001.npz"
+            save_frame_npz(frame, out_path)
+            loaded = load_frame_npz(out_path)
+
+        self.assertAlmostEqual(loaded.timestamp, frame.timestamp)
+        np.testing.assert_allclose(loaded.static_points_world, frame.static_points_world)
+        np.testing.assert_allclose(loaded.dynamic_points_world, frame.dynamic_points_world)
+        np.testing.assert_array_equal(loaded.dynamic_instance_ids, frame.dynamic_instance_ids)
+        np.testing.assert_allclose(loaded.dynamic_scores, frame.dynamic_scores)
+        np.testing.assert_allclose(loaded.confidence, frame.confidence)
+        np.testing.assert_allclose(loaded.visibility, frame.visibility)
+        self.assertEqual(loaded.static_mesh_path, frame.static_mesh_path)
+        self.assertEqual(len(loaded.dynamic_meshes), 1)
+        self.assertEqual(loaded.dynamic_meshes[0].instance_id, 7)
+
+    def test_separation_frame_rejects_length_mismatch(self):
+        with self.assertRaises(ValueError):
+            SeparationFrame(
+                timestamp=0.0,
+                static_points_world=np.zeros((1, 3), dtype=np.float32),
+                dynamic_points_world=np.zeros((2, 3), dtype=np.float32),
+                dynamic_instance_ids=np.array([1], dtype=np.int64),
+                dynamic_scores=np.array([0.5, 0.6], dtype=np.float32),
+                confidence=np.array([0.5, 0.6], dtype=np.float32),
+                visibility=np.array([0.5, 0.6], dtype=np.float32),
+            )
+
+
+if __name__ == "__main__":
+    unittest.main()
