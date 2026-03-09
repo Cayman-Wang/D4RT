@@ -78,7 +78,8 @@ D4RT/
 │   ├── visualize_separation_frame.py
 │   ├── visualize_separation_sequence.py
 │   ├── visualize_separation_timeline.py
-│   └── visualize_dataset_rgbd_sequence.py
+│   ├── visualize_dataset_rgbd_sequence.py
+│   └── visualize_dataset_rgbd_timeline.py
 ├── pointcloud_result_guide_zh.md
 ├── rgbd_scene_guide_zh.md
 └── README_zh.md
@@ -311,6 +312,40 @@ python scripts/visualize_separation_timeline.py \
 关于“怎么看当前结果是否合理、什么时候该继续训练”的判断方法，请直接看：[`pointcloud_result_guide_zh.md`](./pointcloud_result_guide_zh.md)。
 
 如果你要看“数据集原始 RGB 外观”的稠密点云（而不是分离语义色），请看：[`rgbd_scene_guide_zh.md`](./rgbd_scene_guide_zh.md)。
+
+如果你要看“数据集 RGBD 的 4D 动态变化”（静态全局 + 动态滑窗时间轴），直接运行：
+
+```bash
+python scripts/visualize_dataset_rgbd_timeline.py \
+  --dataset_root ${DATA_ROOT} \
+  --dset val \
+  --sequence ani10_new_f \
+  --start_frame 0 \
+  --end_frame 128 \
+  --frame_stride 1 \
+  --pixel_stride 1 \
+  --dynamic_mode window \
+  --dynamic_window 8 \
+  --voxel_size 0.01 \
+  --max_static_points 250000 \
+  --max_dynamic_points 150000 \
+  --backend matplotlib
+```
+
+无 GUI 导出（逐帧 PLY + 摘要 JSON）：
+
+```bash
+python scripts/visualize_dataset_rgbd_timeline.py \
+  --dataset_root ${DATA_ROOT} \
+  --dset val \
+  --sequence ani10_new_f \
+  --max_frames 64 \
+  --dynamic_mode window \
+  --dynamic_window 8 \
+  --backend none \
+  --export_frames_dir ${OUT_ROOT}/rgbd_timeline_frames \
+  --export_summary_json ${OUT_ROOT}/rgbd_timeline_summary.json
+```
 
 ### 7) 正式训练建议（24G 显存三档参数 + 实测高利用率档）
 

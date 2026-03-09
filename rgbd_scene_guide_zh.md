@@ -102,3 +102,48 @@ python scripts/visualize_dataset_rgbd_sequence.py \
 4. 预览不弹窗  
 无桌面环境时使用 `--backend none`；有桌面环境需安装 `open3d` 并确保本机图形会话可用。
 
+## 7. 4D 时间轴动态查看（逐帧/滑窗）
+
+如果你想看“随着时间变化的稠密 RGBD 点云”，而不是单个融合结果，用新脚本：
+
+```bash
+python scripts/visualize_dataset_rgbd_timeline.py \
+  --dataset_root "${DATA_ROOT}" \
+  --dset val \
+  --sequence ani10_new_f \
+  --start_frame 0 \
+  --end_frame 128 \
+  --frame_stride 1 \
+  --pixel_stride 1 \
+  --dynamic_mode window \
+  --dynamic_window 8 \
+  --voxel_size 0.01 \
+  --max_static_points 250000 \
+  --max_dynamic_points 150000 \
+  --point_size 1.0 \
+  --backend matplotlib
+```
+
+说明：
+- 静态层：全选帧融合的全局背景（低透明度，不随时间条变化）。
+- 动态层：`window` 模式显示最近 `K` 帧叠加；可改 `--dynamic_mode frame` 仅显示当前帧。
+- 时间条支持拖动、键盘左右键、`Prev/Next` 按钮。
+
+## 8. 无 GUI 批量导出（逐帧 PLY + 摘要）
+
+```bash
+python scripts/visualize_dataset_rgbd_timeline.py \
+  --dataset_root "${DATA_ROOT}" \
+  --dset val \
+  --sequence ani10_new_f \
+  --max_frames 64 \
+  --dynamic_mode window \
+  --dynamic_window 8 \
+  --backend none \
+  --export_frames_dir "${OUT_ROOT}/timeline_frames" \
+  --export_summary_json "${OUT_ROOT}/timeline_summary.json"
+```
+
+导出结果：
+- `timeline_frames/frame_00000.ply` ...：每个选帧的彩色稠密点云。
+- `timeline_summary.json`：选帧范围、每帧点数、初始窗口配置等统计。
