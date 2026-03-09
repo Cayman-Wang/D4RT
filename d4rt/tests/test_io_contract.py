@@ -74,6 +74,29 @@ class TestIOContract(unittest.TestCase):
         self.assertEqual(loaded.static_count, 1)
         self.assertEqual(loaded.dynamic_count, 1)
 
+    def test_to_dict_from_dict_supports_empty_point_and_color_arrays(self):
+        frame = SeparationFrame(
+            timestamp=0.0,
+            static_points_world=np.zeros((0, 3), dtype=np.float32),
+            dynamic_points_world=np.zeros((0, 3), dtype=np.float32),
+            dynamic_instance_ids=np.zeros((0,), dtype=np.int64),
+            dynamic_scores=np.zeros((0,), dtype=np.float32),
+            confidence=np.zeros((0,), dtype=np.float32),
+            visibility=np.zeros((0,), dtype=np.float32),
+            static_colors_rgb=np.zeros((0, 3), dtype=np.uint8),
+            dynamic_colors_rgb=np.zeros((0, 3), dtype=np.uint8),
+        )
+
+        payload = frame.to_dict()
+        loaded = SeparationFrame.from_dict(payload)
+
+        self.assertEqual(loaded.static_points_world.shape, (0, 3))
+        self.assertEqual(loaded.dynamic_points_world.shape, (0, 3))
+        self.assertEqual(loaded.static_colors_rgb.shape, (0, 3))
+        self.assertEqual(loaded.dynamic_colors_rgb.shape, (0, 3))
+        self.assertEqual(loaded.static_count, 0)
+        self.assertEqual(loaded.dynamic_count, 0)
+
     def test_separation_frame_rejects_length_mismatch(self):
         with self.assertRaises(ValueError):
             SeparationFrame(

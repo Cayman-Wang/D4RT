@@ -12,6 +12,8 @@ import numpy as np
 
 def _as_points(points: np.ndarray, name: str) -> np.ndarray:
     arr = np.asarray(points, dtype=np.float32)
+    if arr.size == 0:
+        return np.zeros((0, 3), dtype=np.float32)
     if arr.ndim != 2 or arr.shape[1] != 3:
         raise ValueError(f"{name} must have shape (N, 3), got {arr.shape}.")
     return arr
@@ -26,6 +28,8 @@ def _as_1d(values: np.ndarray, name: str, dtype: np.dtype) -> np.ndarray:
 
 def _as_colors(colors: np.ndarray, name: str) -> np.ndarray:
     arr = np.asarray(colors, dtype=np.uint8)
+    if arr.size == 0:
+        return np.zeros((0, 3), dtype=np.uint8)
     if arr.ndim != 2 or arr.shape[1] != 3:
         raise ValueError(f"{name} must have shape (N, 3), got {arr.shape}.")
     return arr
