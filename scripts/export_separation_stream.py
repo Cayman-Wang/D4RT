@@ -238,13 +238,100 @@ def _transform_to_world(
     return coords_world.astype(np.float32), motion_world.astype(np.float32)
 
 
+def _sample_query_colors(
+    video: np.ndarray,
+    t_tgt: np.ndarray,
+    gt_2d_tgt: Optional[np.ndarray],
+    coords_uv: Optional[np.ndarray],
+) -> np.ndarray:
+    """
+    Sample RGB colors for queries from resized model-input frames.
+
+    Args:
+        video: (S, 3, H, W) float32 tensor in [0, 1] range.
+        t_tgt: (N,) target frame index per query.
+        gt_2d_tgt: optional (N, 2) pixel coordinates in model input space.
+        coords_uv: optional (N, 2) normalized [0, 1] coordinates as fallback.
+
+    Returns:
+        colors_rgb: (N, 3) uint8.
+    """
+    if video.ndim != 4 or video.shape[1] != 3:
+        raise ValueError(f"video must have shape (S, 3, H, W), got {video.shape}.")
+    num_frames, _, height, width = video.shape
+    query_count = t_tgt.shape[0]
+
+    if gt_2d_tgt is not None:
+        coords_xy = np.asarray(gt_2d_tgt, dtype=np.float32)
+        if coords_xy.shape != (query_count, 2):
+            raise ValueError(
+                f"gt_2d_tgt must have shape ({query_count}, 2), got {coords_xy.shape}."
+            )
+        x = coords_xy[:, 0]
+        y = coords_xy[:, 1]
+    else:
+        if coords_uv is None:
+            raise ValueError("coords_uv is required when gt_2d_tgt is not available.")
+        uv = np.asarray(coords_uv, dtype=np.float32)
+        if uv.shape != (query_count, 2):
+            raise ValueError(
+                f"coords_uv must have shape ({query_count}, 2), got {uv.shape}."
+            )
+        x = uv[:, 0] * float(width - 1)
+        y = uv[:, 1] * float(height - 1)
+
+    center_x = 0.5 * float(width - 1)
+    center_y = 0.5 * float(height - 1)
+    finite_mask = np.isfinite(x) & np.isfinite(y)
+    if not finite_mask.all():
+        x = x.copy()
+        y = y.copy()
+        x[~finite_mask] = center_x
+        y[~finite_mask] = center_y
+
+    x = np.clip(x, 0.0, float(width - 1))
+    y = np.clip(y, 0.0, float(height - 1))
+
+    x0 = np.floor(x).astype(np.int64)
+    y0 = np.floor(y).astype(np.int64)
+    x1 = np.minimum(x0 + 1, width - 1)
+    y1 = np.minimum(y0 + 1, height - 1)
+
+    wx = (x - x0.astype(np.float32)).astype(np.float32)
+    wy = (y - y0.astype(np.float32)).astype(np.float32)
+
+    t_clamped = np.clip(t_tgt.astype(np.int64), 0, num_frames - 1)
+
+    video_clamped = np.clip(video.astype(np.float32, copy=False), 0.0, 1.0)
+
+    c00 = video_clamped[t_clamped, :, y0, x0]
+    c10 = video_clamped[t_clamped, :, y0, x1]
+    c01 = video_clamped[t_clamped, :, y1, x0]
+    c11 = video_clamped[t_clamped, :, y1, x1]
+
+    w00 = (1.0 - wx) * (1.0 - wy)
+    w10 = wx * (1.0 - wy)
+    w01 = (1.0 - wx) * wy
+    w11 = wx * wy
+
+    colors = (
+        c00 * w00[:, None]
+        + c10 * w10[:, None]
+        + c01 * w01[:, None]
+        + c11 * w11[:, None]
+    )
+    colors = np.clip(np.round(colors * 255.0), 0, 255).astype(np.uint8)
+    return colors
+
+
 def _dedup_frame_entries(
     point_ids: np.ndarray,
     points_world: np.ndarray,
     motion_world: np.ndarray,
     confidence: np.ndarray,
     visibility: np.ndarray,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    colors_rgb: np.ndarray,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     best_index_by_id: Dict[int, int] = {}
 
     for idx, point_id in enumerate(point_ids.tolist()):
@@ -260,6 +347,7 @@ def _dedup_frame_entries(
         motion_world[keep_indices],
         confidence[keep_indices],
         visibility[keep_indices],
+        colors_rgb[keep_indices],
     )
 
 
@@ -284,11 +372,31 @@ def _extract_clip_frames(
     t_tgt = batch["t_tgt"][0].detach().cpu().numpy().astype(np.int64)
     t_cam = batch["t_cam"][0].detach().cpu().numpy().astype(np.int64)
     cams_t_world = batch["cams_T_world"][0].detach().cpu().numpy().astype(np.float32)
+    video = batch["video"][0].detach().cpu().numpy().astype(np.float32)
 
     if "traj_indices" in batch:
         traj_indices = batch["traj_indices"][0].detach().cpu().numpy().astype(np.int64)
     else:
         traj_indices = np.arange(coords_cam.shape[0], dtype=np.int64)
+
+    gt_2d_tgt = batch.get("gt_2d_tgt")
+    if isinstance(gt_2d_tgt, torch.Tensor):
+        gt_2d_tgt = gt_2d_tgt[0].detach().cpu().numpy().astype(np.float32)
+    else:
+        gt_2d_tgt = None
+
+    coords_uv = batch.get("coords_uv")
+    if isinstance(coords_uv, torch.Tensor):
+        coords_uv = coords_uv[0].detach().cpu().numpy().astype(np.float32)
+    else:
+        coords_uv = None
+
+    query_colors = _sample_query_colors(
+        video=video,
+        t_tgt=t_tgt,
+        gt_2d_tgt=gt_2d_tgt,
+        coords_uv=coords_uv,
+    )
 
     points_world, motion_world = _transform_to_world(
         coords_cam=coords_cam,
@@ -314,14 +422,23 @@ def _extract_clip_frames(
         frame_motion = motion_world[frame_mask]
         frame_conf = confidence[frame_mask]
         frame_vis = visibility[frame_mask]
+        frame_colors = query_colors[frame_mask]
 
         if dedup and frame_ids.shape[0] > 0:
-            frame_ids, frame_points, frame_motion, frame_conf, frame_vis = _dedup_frame_entries(
+            (
+                frame_ids,
+                frame_points,
+                frame_motion,
+                frame_conf,
+                frame_vis,
+                frame_colors,
+            ) = _dedup_frame_entries(
                 point_ids=frame_ids,
                 points_world=frame_points,
                 motion_world=frame_motion,
                 confidence=frame_conf,
                 visibility=frame_vis,
+                colors_rgb=frame_colors,
             )
 
         frame_entries.append(
@@ -335,6 +452,7 @@ def _extract_clip_frames(
                 "motion_world": frame_motion,
                 "confidence": frame_conf,
                 "visibility": frame_vis,
+                "colors_rgb": frame_colors,
             }
         )
 
@@ -358,6 +476,7 @@ def _pack_frames(frame_entries: List[Dict[str, Any]]) -> Dict[str, np.ndarray]:
     motion_world = np.zeros((num_frames, max_points, 3), dtype=np.float32)
     confidence = np.zeros((num_frames, max_points), dtype=np.float32)
     visibility = np.zeros((num_frames, max_points), dtype=np.float32)
+    colors_rgb = np.zeros((num_frames, max_points, 3), dtype=np.uint8)
     point_ids = np.zeros((num_frames, max_points), dtype=np.int64)
     valid_mask = np.zeros((num_frames, max_points), dtype=np.bool_)
 
@@ -377,6 +496,7 @@ def _pack_frames(frame_entries: List[Dict[str, Any]]) -> Dict[str, np.ndarray]:
             motion_world[frame_idx, :count] = entry["motion_world"]
             confidence[frame_idx, :count] = entry["confidence"]
             visibility[frame_idx, :count] = entry["visibility"]
+            colors_rgb[frame_idx, :count] = entry["colors_rgb"]
             point_ids[frame_idx, :count] = entry["point_ids"]
             valid_mask[frame_idx, :count] = True
 
@@ -396,6 +516,7 @@ def _pack_frames(frame_entries: List[Dict[str, Any]]) -> Dict[str, np.ndarray]:
         "motion_world": motion_world,
         "confidence": confidence,
         "visibility": visibility,
+        "colors_rgb": colors_rgb,
         "point_ids": point_ids,
         "timestamps": timestamps,
         "valid_mask": valid_mask,

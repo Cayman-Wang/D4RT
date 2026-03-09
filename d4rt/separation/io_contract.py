@@ -24,6 +24,13 @@ def _as_1d(values: np.ndarray, name: str, dtype: np.dtype) -> np.ndarray:
     return arr
 
 
+def _as_colors(colors: np.ndarray, name: str) -> np.ndarray:
+    arr = np.asarray(colors, dtype=np.uint8)
+    if arr.ndim != 2 or arr.shape[1] != 3:
+        raise ValueError(f"{name} must have shape (N, 3), got {arr.shape}.")
+    return arr
+
+
 @dataclass
 class DynamicMeshInfo:
     """Mesh metadata for one dynamic instance."""
@@ -71,6 +78,8 @@ class SeparationFrame:
     dynamic_scores: np.ndarray
     confidence: np.ndarray
     visibility: np.ndarray
+    static_colors_rgb: Optional[np.ndarray] = None
+    dynamic_colors_rgb: Optional[np.ndarray] = None
     static_mesh_path: Optional[str] = None
     dynamic_meshes: List[DynamicMeshInfo] = field(default_factory=list)
 
@@ -84,6 +93,16 @@ class SeparationFrame:
         self.dynamic_scores = _as_1d(self.dynamic_scores, "dynamic_scores", dtype=np.float32)
         self.confidence = _as_1d(self.confidence, "confidence", dtype=np.float32)
         self.visibility = _as_1d(self.visibility, "visibility", dtype=np.float32)
+        self.static_colors_rgb = (
+            None
+            if self.static_colors_rgb is None
+            else _as_colors(self.static_colors_rgb, "static_colors_rgb")
+        )
+        self.dynamic_colors_rgb = (
+            None
+            if self.dynamic_colors_rgb is None
+            else _as_colors(self.dynamic_colors_rgb, "dynamic_colors_rgb")
+        )
         self.static_mesh_path = None if self.static_mesh_path is None else str(self.static_mesh_path)
 
         if not np.isfinite(self.timestamp):
@@ -100,6 +119,17 @@ class SeparationFrame:
                 raise ValueError(
                     f"{name} length ({values.shape[0]}) must match dynamic point count ({dynamic_count})."
                 )
+
+        if self.static_colors_rgb is not None and self.static_colors_rgb.shape[0] != self.static_count:
+            raise ValueError(
+                "static_colors_rgb length "
+                f"({self.static_colors_rgb.shape[0]}) must match static point count ({self.static_count})."
+            )
+        if self.dynamic_colors_rgb is not None and self.dynamic_colors_rgb.shape[0] != dynamic_count:
+            raise ValueError(
+                "dynamic_colors_rgb length "
+                f"({self.dynamic_colors_rgb.shape[0]}) must match dynamic point count ({dynamic_count})."
+            )
 
         if self.dynamic_meshes is None:
             self.dynamic_meshes = []
@@ -126,6 +156,12 @@ class SeparationFrame:
             "dynamic_scores": self.dynamic_scores.tolist(),
             "confidence": self.confidence.tolist(),
             "visibility": self.visibility.tolist(),
+            "static_colors_rgb": (
+                None if self.static_colors_rgb is None else self.static_colors_rgb.tolist()
+            ),
+            "dynamic_colors_rgb": (
+                None if self.dynamic_colors_rgb is None else self.dynamic_colors_rgb.tolist()
+            ),
             "static_mesh_path": self.static_mesh_path,
             "dynamic_meshes": [mesh.to_dict() for mesh in self.dynamic_meshes],
         }
@@ -140,6 +176,16 @@ class SeparationFrame:
             dynamic_scores=np.asarray(payload["dynamic_scores"], dtype=np.float32),
             confidence=np.asarray(payload["confidence"], dtype=np.float32),
             visibility=np.asarray(payload["visibility"], dtype=np.float32),
+            static_colors_rgb=(
+                None
+                if payload.get("static_colors_rgb") is None
+                else np.asarray(payload["static_colors_rgb"], dtype=np.uint8)
+            ),
+            dynamic_colors_rgb=(
+                None
+                if payload.get("dynamic_colors_rgb") is None
+                else np.asarray(payload["dynamic_colors_rgb"], dtype=np.uint8)
+            ),
             static_mesh_path=payload.get("static_mesh_path"),
             dynamic_meshes=[
                 DynamicMeshInfo.from_dict(item)
@@ -154,18 +200,22 @@ def save_frame_npz(frame: SeparationFrame, path: str | Path) -> None:
     frame = frame if isinstance(frame, SeparationFrame) else SeparationFrame.from_dict(frame)
     dynamic_meshes_json = json.dumps([mesh.to_dict() for mesh in frame.dynamic_meshes])
 
-    np.savez_compressed(
-        str(path),
-        timestamp=np.asarray(frame.timestamp, dtype=np.float64),
-        static_points_world=frame.static_points_world,
-        dynamic_points_world=frame.dynamic_points_world,
-        dynamic_instance_ids=frame.dynamic_instance_ids,
-        dynamic_scores=frame.dynamic_scores,
-        confidence=frame.confidence,
-        visibility=frame.visibility,
-        static_mesh_path=np.asarray(frame.static_mesh_path or "", dtype=np.str_),
-        dynamic_meshes_json=np.asarray(dynamic_meshes_json, dtype=np.str_),
-    )
+    payload: Dict[str, np.ndarray] = {
+        "timestamp": np.asarray(frame.timestamp, dtype=np.float64),
+        "static_points_world": frame.static_points_world,
+        "dynamic_points_world": frame.dynamic_points_world,
+        "dynamic_instance_ids": frame.dynamic_instance_ids,
+        "dynamic_scores": frame.dynamic_scores,
+        "confidence": frame.confidence,
+        "visibility": frame.visibility,
+        "static_mesh_path": np.asarray(frame.static_mesh_path or "", dtype=np.str_),
+        "dynamic_meshes_json": np.asarray(dynamic_meshes_json, dtype=np.str_),
+    }
+    if frame.static_colors_rgb is not None:
+        payload["static_colors_rgb"] = frame.static_colors_rgb
+    if frame.dynamic_colors_rgb is not None:
+        payload["dynamic_colors_rgb"] = frame.dynamic_colors_rgb
+    np.savez_compressed(str(path), **payload)
 
 
 def load_frame_npz(path: str | Path) -> SeparationFrame:
@@ -193,6 +243,8 @@ def load_frame_npz(path: str | Path) -> SeparationFrame:
             dynamic_scores=payload["dynamic_scores"],
             confidence=payload["confidence"],
             visibility=payload["visibility"],
+            static_colors_rgb=payload.get("static_colors_rgb"),
+            dynamic_colors_rgb=payload.get("dynamic_colors_rgb"),
             static_mesh_path=static_mesh_value,
             dynamic_meshes=[DynamicMeshInfo.from_dict(item) for item in dynamic_meshes],
         )

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
-from typing import Tuple
+from typing import Optional, Tuple
 
 import numpy as np
 
@@ -43,6 +43,13 @@ def _parse_args() -> argparse.Namespace:
         choices=["auto", "open3d", "matplotlib"],
         default="auto",
         help="Visualization backend.",
+    )
+    parser.add_argument(
+        "--color_mode",
+        type=str,
+        choices=["semantic", "rgb"],
+        default="semantic",
+        help="Point color mode: semantic or RGB loaded from frame NPZ.",
     )
     parser.add_argument(
         "--max_points",
@@ -98,7 +105,28 @@ def _resolve_frame_path(args: argparse.Namespace) -> Path:
     return frame_files[args.frame_index]
 
 
-def _load_frame(frame_path: Path) -> Tuple[np.ndarray, np.ndarray, float]:
+def _load_optional_colors(
+    payload: np.lib.npyio.NpzFile,
+    key: str,
+    point_count: int,
+    frame_path: Path,
+) -> Optional[np.ndarray]:
+    values = payload.get(key)
+    if values is None:
+        return None
+    colors = np.asarray(values, dtype=np.uint8)
+    if colors.shape != (point_count, 3):
+        print(
+            f"Warning: {frame_path.name} has invalid {key} shape {colors.shape}, "
+            "falling back to semantic colors."
+        )
+        return None
+    return colors
+
+
+def _load_frame(
+    frame_path: Path,
+) -> Tuple[np.ndarray, np.ndarray, float, Optional[np.ndarray], Optional[np.ndarray]]:
     with np.load(str(frame_path), allow_pickle=False) as payload:
         static_points = np.asarray(payload["static_points_world"], dtype=np.float32)
         dynamic_points = np.asarray(payload["dynamic_points_world"], dtype=np.float32)
@@ -118,17 +146,55 @@ def _load_frame(frame_path: Path) -> Tuple[np.ndarray, np.ndarray, float]:
         else:
             timestamp = float(np.asarray(timestamp_raw).reshape(-1)[0])
 
-    return static_points, dynamic_points, timestamp
+        static_colors_rgb = _load_optional_colors(
+            payload, "static_colors_rgb", static_points.shape[0], frame_path
+        )
+        dynamic_colors_rgb = _load_optional_colors(
+            payload, "dynamic_colors_rgb", dynamic_points.shape[0], frame_path
+        )
+
+    return static_points, dynamic_points, timestamp, static_colors_rgb, dynamic_colors_rgb
 
 
-def _subsample(points: np.ndarray, max_points: int, rng: np.random.Generator) -> np.ndarray:
+def _subsample(
+    points: np.ndarray,
+    colors: Optional[np.ndarray],
+    max_points: int,
+    rng: np.random.Generator,
+) -> Tuple[np.ndarray, Optional[np.ndarray]]:
     if max_points <= 0 or points.shape[0] <= max_points:
-        return points
+        return points, colors
     keep = rng.choice(points.shape[0], size=max_points, replace=False)
-    return points[keep]
+    points_down = points[keep]
+    colors_down = None if colors is None else colors[keep]
+    return points_down, colors_down
 
 
-def _visualize_open3d(static_points: np.ndarray, dynamic_points: np.ndarray, title: str) -> None:
+def _semantic_static_colors(count: int) -> np.ndarray:
+    return np.tile(np.array([[166, 166, 166]], dtype=np.uint8), (count, 1))
+
+
+def _semantic_dynamic_colors(count: int) -> np.ndarray:
+    return np.tile(np.array([[255, 51, 51]], dtype=np.uint8), (count, 1))
+
+
+def _resolve_colors(
+    color_mode: str,
+    rgb_colors: Optional[np.ndarray],
+    semantic_colors: np.ndarray,
+) -> np.ndarray:
+    if color_mode == "rgb" and rgb_colors is not None:
+        return rgb_colors
+    return semantic_colors
+
+
+def _visualize_open3d(
+    static_points: np.ndarray,
+    dynamic_points: np.ndarray,
+    static_colors: np.ndarray,
+    dynamic_colors: np.ndarray,
+    title: str,
+) -> None:
     try:
         import open3d as o3d
     except ImportError as exc:
@@ -141,15 +207,17 @@ def _visualize_open3d(static_points: np.ndarray, dynamic_points: np.ndarray, tit
     if static_points.shape[0] > 0:
         static_pcd = o3d.geometry.PointCloud()
         static_pcd.points = o3d.utility.Vector3dVector(static_points)
-        static_color = np.tile(np.array([[0.65, 0.65, 0.65]], dtype=np.float64), (static_points.shape[0], 1))
-        static_pcd.colors = o3d.utility.Vector3dVector(static_color)
+        static_pcd.colors = o3d.utility.Vector3dVector(
+            static_colors.astype(np.float64, copy=False) / 255.0
+        )
         geometries.append(static_pcd)
 
     if dynamic_points.shape[0] > 0:
         dynamic_pcd = o3d.geometry.PointCloud()
         dynamic_pcd.points = o3d.utility.Vector3dVector(dynamic_points)
-        dynamic_color = np.tile(np.array([[1.0, 0.2, 0.2]], dtype=np.float64), (dynamic_points.shape[0], 1))
-        dynamic_pcd.colors = o3d.utility.Vector3dVector(dynamic_color)
+        dynamic_pcd.colors = o3d.utility.Vector3dVector(
+            dynamic_colors.astype(np.float64, copy=False) / 255.0
+        )
         geometries.append(dynamic_pcd)
 
     geometries.append(o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.5))
@@ -160,6 +228,8 @@ def _visualize_open3d(static_points: np.ndarray, dynamic_points: np.ndarray, tit
 def _visualize_matplotlib(
     static_points: np.ndarray,
     dynamic_points: np.ndarray,
+    static_colors: np.ndarray,
+    dynamic_colors: np.ndarray,
     title: str,
     point_size: float,
     save_png: str | None,
@@ -181,7 +251,7 @@ def _visualize_matplotlib(
             static_points[:, 1],
             static_points[:, 2],
             s=point_size,
-            c="#A6A6A6",
+            c=static_colors / 255.0,
             alpha=0.6,
             label="static",
         )
@@ -192,7 +262,7 @@ def _visualize_matplotlib(
             dynamic_points[:, 1],
             dynamic_points[:, 2],
             s=point_size,
-            c="#E53935",
+            c=dynamic_colors / 255.0,
             alpha=0.9,
             label="dynamic",
         )
@@ -220,10 +290,21 @@ def main() -> None:
     rng = np.random.default_rng(args.seed)
 
     frame_path = _resolve_frame_path(args)
-    static_points, dynamic_points, timestamp = _load_frame(frame_path)
+    static_points, dynamic_points, timestamp, static_rgb, dynamic_rgb = _load_frame(frame_path)
 
-    static_points = _subsample(static_points, args.max_points, rng)
-    dynamic_points = _subsample(dynamic_points, args.max_points, rng)
+    static_points, static_rgb = _subsample(static_points, static_rgb, args.max_points, rng)
+    dynamic_points, dynamic_rgb = _subsample(dynamic_points, dynamic_rgb, args.max_points, rng)
+
+    static_colors = _resolve_colors(
+        color_mode=args.color_mode,
+        rgb_colors=static_rgb,
+        semantic_colors=_semantic_static_colors(static_points.shape[0]),
+    )
+    dynamic_colors = _resolve_colors(
+        color_mode=args.color_mode,
+        rgb_colors=dynamic_rgb,
+        semantic_colors=_semantic_dynamic_colors(dynamic_points.shape[0]),
+    )
 
     title = (
         f"{frame_path.name} | timestamp={timestamp:.3f} | "
@@ -234,21 +315,36 @@ def main() -> None:
         f"- static points: {static_points.shape[0]}"
         f" | dynamic points: {dynamic_points.shape[0]}"
     )
+    print(f"- color mode: {args.color_mode}")
 
     backend = args.backend
     if backend == "auto":
         try:
-            _visualize_open3d(static_points, dynamic_points, title)
+            _visualize_open3d(
+                static_points=static_points,
+                dynamic_points=dynamic_points,
+                static_colors=static_colors,
+                dynamic_colors=dynamic_colors,
+                title=title,
+            )
             return
         except ImportError:
             backend = "matplotlib"
 
     if backend == "open3d":
-        _visualize_open3d(static_points, dynamic_points, title)
+        _visualize_open3d(
+            static_points=static_points,
+            dynamic_points=dynamic_points,
+            static_colors=static_colors,
+            dynamic_colors=dynamic_colors,
+            title=title,
+        )
     else:
         _visualize_matplotlib(
             static_points=static_points,
             dynamic_points=dynamic_points,
+            static_colors=static_colors,
+            dynamic_colors=dynamic_colors,
             title=title,
             point_size=args.point_size,
             save_png=args.save_png,

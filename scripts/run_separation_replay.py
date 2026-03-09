@@ -5,7 +5,7 @@ import json
 import os
 import sys
 from pathlib import Path
-from typing import Dict, Iterable, List
+from typing import Dict, Iterable, List, Optional
 
 import numpy as np
 
@@ -102,6 +102,7 @@ def main() -> None:
         visibility = _get_array(payload, ["visibility", "visibilities"])
         timestamps = _get_array(payload, ["timestamps", "timestamp"], required=False)
         point_ids = _get_array(payload, ["point_ids", "query_ids"], required=False)
+        colors = _get_array(payload, ["colors_rgb"], required=False)
 
         points = np.asarray(points, dtype=np.float32)
         if points.ndim != 3 or points.shape[-1] != 3:
@@ -158,6 +159,21 @@ def main() -> None:
                     f"point_ids must have shape (T, N) or (N,), got {point_ids.shape}."
                 )
 
+        colors_rgb: Optional[np.ndarray] = None
+        if colors is not None:
+            colors_array = np.asarray(colors)
+            if colors_array.shape != (num_frames, num_points, 3):
+                raise ValueError(
+                    f"colors_rgb must have shape (T, N, 3), got {colors_array.shape}."
+                )
+            if np.issubdtype(colors_array.dtype, np.floating):
+                max_color = float(colors_array.max()) if colors_array.size > 0 else 0.0
+                if max_color <= 1.0:
+                    colors_array = np.clip(np.round(colors_array * 255.0), 0, 255)
+                else:
+                    colors_array = np.clip(np.round(colors_array), 0, 255)
+            colors_rgb = colors_array.astype(np.uint8, copy=False)
+
     motion_config = MotionScoreConfig(
         dispersion_weight=args.dispersion_weight,
         residual_weight=args.residual_weight,
@@ -204,6 +220,7 @@ def main() -> None:
         frame_vis = visibility[frame_idx]
         frame_ids = point_ids[frame_idx]
         frame_ts = float(timestamps[frame_idx])
+        frame_colors = None if colors_rgb is None else colors_rgb[frame_idx]
 
         score_result = scorer.update(
             points_world=frame_points,
@@ -218,6 +235,12 @@ def main() -> None:
         dynamic_scores = score_result.scores[score_result.dynamic_mask]
         dynamic_confidence = frame_conf[score_result.dynamic_mask]
         dynamic_visibility = frame_vis[score_result.dynamic_mask]
+        static_colors = (
+            None if frame_colors is None else frame_colors[score_result.static_mask]
+        )
+        dynamic_colors = (
+            None if frame_colors is None else frame_colors[score_result.dynamic_mask]
+        )
 
         tracking_result = tracker.update(
             timestamp=frame_ts,
@@ -233,6 +256,8 @@ def main() -> None:
             dynamic_scores=dynamic_scores,
             confidence=dynamic_confidence,
             visibility=dynamic_visibility,
+            static_colors_rgb=static_colors,
+            dynamic_colors_rgb=dynamic_colors,
             static_mesh_path=None,
             dynamic_meshes=[],
         )

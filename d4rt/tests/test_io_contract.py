@@ -26,6 +26,8 @@ class TestIOContract(unittest.TestCase):
             dynamic_scores=np.array([0.8, 0.9, 0.75], dtype=np.float32),
             confidence=np.array([0.95, 0.90, 0.85], dtype=np.float32),
             visibility=np.array([0.99, 0.85, 0.88], dtype=np.float32),
+            static_colors_rgb=np.array([[11, 12, 13], [21, 22, 23]], dtype=np.uint8),
+            dynamic_colors_rgb=np.array([[31, 32, 33], [41, 42, 43], [51, 52, 53]], dtype=np.uint8),
             static_mesh_path="meshes/static_001.ply",
             dynamic_meshes=[
                 DynamicMeshInfo(instance_id=7, mesh_path="meshes/dyn_007.ply", pose=np.eye(4)),
@@ -44,9 +46,33 @@ class TestIOContract(unittest.TestCase):
         np.testing.assert_allclose(loaded.dynamic_scores, frame.dynamic_scores)
         np.testing.assert_allclose(loaded.confidence, frame.confidence)
         np.testing.assert_allclose(loaded.visibility, frame.visibility)
+        np.testing.assert_array_equal(loaded.static_colors_rgb, frame.static_colors_rgb)
+        np.testing.assert_array_equal(loaded.dynamic_colors_rgb, frame.dynamic_colors_rgb)
         self.assertEqual(loaded.static_mesh_path, frame.static_mesh_path)
         self.assertEqual(len(loaded.dynamic_meshes), 1)
         self.assertEqual(loaded.dynamic_meshes[0].instance_id, 7)
+
+    def test_load_legacy_npz_without_colors(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            out_path = Path(tmp_dir) / "frame_legacy.npz"
+            np.savez_compressed(
+                out_path,
+                timestamp=np.asarray(0.0, dtype=np.float64),
+                static_points_world=np.array([[0.0, 0.0, 0.0]], dtype=np.float32),
+                dynamic_points_world=np.array([[1.0, 0.0, 0.0]], dtype=np.float32),
+                dynamic_instance_ids=np.array([3], dtype=np.int64),
+                dynamic_scores=np.array([0.7], dtype=np.float32),
+                confidence=np.array([0.9], dtype=np.float32),
+                visibility=np.array([0.95], dtype=np.float32),
+                static_mesh_path=np.asarray("", dtype=np.str_),
+                dynamic_meshes_json=np.asarray("[]", dtype=np.str_),
+            )
+            loaded = load_frame_npz(out_path)
+
+        self.assertIsNone(loaded.static_colors_rgb)
+        self.assertIsNone(loaded.dynamic_colors_rgb)
+        self.assertEqual(loaded.static_count, 1)
+        self.assertEqual(loaded.dynamic_count, 1)
 
     def test_separation_frame_rejects_length_mismatch(self):
         with self.assertRaises(ValueError):
@@ -58,6 +84,31 @@ class TestIOContract(unittest.TestCase):
                 dynamic_scores=np.array([0.5, 0.6], dtype=np.float32),
                 confidence=np.array([0.5, 0.6], dtype=np.float32),
                 visibility=np.array([0.5, 0.6], dtype=np.float32),
+            )
+
+    def test_separation_frame_rejects_color_length_mismatch(self):
+        with self.assertRaises(ValueError):
+            SeparationFrame(
+                timestamp=0.0,
+                static_points_world=np.zeros((2, 3), dtype=np.float32),
+                dynamic_points_world=np.zeros((1, 3), dtype=np.float32),
+                dynamic_instance_ids=np.array([1], dtype=np.int64),
+                dynamic_scores=np.array([0.6], dtype=np.float32),
+                confidence=np.array([0.8], dtype=np.float32),
+                visibility=np.array([0.9], dtype=np.float32),
+                static_colors_rgb=np.array([[1, 2, 3]], dtype=np.uint8),
+            )
+
+        with self.assertRaises(ValueError):
+            SeparationFrame(
+                timestamp=0.0,
+                static_points_world=np.zeros((1, 3), dtype=np.float32),
+                dynamic_points_world=np.zeros((2, 3), dtype=np.float32),
+                dynamic_instance_ids=np.array([1, 2], dtype=np.int64),
+                dynamic_scores=np.array([0.6, 0.7], dtype=np.float32),
+                confidence=np.array([0.8, 0.9], dtype=np.float32),
+                visibility=np.array([0.9, 0.95], dtype=np.float32),
+                dynamic_colors_rgb=np.array([[1, 2, 3]], dtype=np.uint8),
             )
 
 
