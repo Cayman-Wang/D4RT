@@ -75,7 +75,12 @@ D4RT/
 │   ├── test_d4rt.py
 │   ├── export_separation_stream.py
 │   ├── run_separation_replay.py
-│   └── visualize_separation_frame.py
+│   ├── visualize_separation_frame.py
+│   ├── visualize_separation_sequence.py
+│   ├── visualize_separation_timeline.py
+│   └── visualize_dataset_rgbd_sequence.py
+├── pointcloud_result_guide_zh.md
+├── rgbd_scene_guide_zh.md
 └── README_zh.md
 ```
 
@@ -214,6 +219,16 @@ python scripts/visualize_separation_frame.py \
   --backend open3d
 ```
 
+如需优先显示真实 RGB（缺失时自动回退语义色）：
+
+```bash
+python scripts/visualize_separation_frame.py \
+  --frames_dir ${OUT_ROOT}/replay_smoke_full/frames \
+  --frame_index 0 \
+  --backend open3d \
+  --color_mode rgb
+```
+
 如果你在远程环境没有图形窗口，可改用 matplotlib 并导出图片：
 
 ```bash
@@ -232,6 +247,70 @@ python scripts/visualize_separation_frame.py \
   --frame_npz ${OUT_ROOT}/replay_smoke_full/frames/frame_000000.npz \
   --backend auto
 ```
+
+如果你想看“序列级完整静态场景 + 动态分离效果”，不要只看单帧。新脚本会把多帧静态点累计到同一 world 坐标系，并支持把动态点按最近窗口或全序列累计后导出为 PLY：
+
+```bash
+python scripts/visualize_separation_sequence.py \
+  --frames_dir ${OUT_ROOT}/replay_smoke_full/frames \
+  --dynamic_mode window \
+  --dynamic_window 4 \
+  --voxel_size 0.02 \
+  --color_mode rgb \
+  --export_static_ply ${OUT_ROOT}/replay_smoke_full/static_scene_accumulated.ply \
+  --export_dynamic_ply ${OUT_ROOT}/replay_smoke_full/dynamic_window.ply \
+  --export_combined_ply ${OUT_ROOT}/replay_smoke_full/combined_scene.ply \
+  --export_instances_dir ${OUT_ROOT}/replay_smoke_full/dynamic_instances \
+  --export_summary_json ${OUT_ROOT}/replay_smoke_full/sequence_summary.json \
+  --backend open3d
+```
+
+远程无图形环境时可以只导出，不开窗口：
+
+```bash
+python scripts/visualize_separation_sequence.py \
+  --frames_dir ${OUT_ROOT}/replay_smoke_full/frames \
+  --dynamic_mode window \
+  --dynamic_window 4 \
+  --voxel_size 0.02 \
+  --export_static_ply ${OUT_ROOT}/replay_smoke_full/static_scene_accumulated.ply \
+  --export_dynamic_ply ${OUT_ROOT}/replay_smoke_full/dynamic_window.ply \
+  --export_combined_ply ${OUT_ROOT}/replay_smoke_full/combined_scene.ply \
+  --export_instances_dir ${OUT_ROOT}/replay_smoke_full/dynamic_instances \
+  --export_summary_json ${OUT_ROOT}/replay_smoke_full/sequence_summary.json \
+  --backend none
+```
+
+推荐默认理解：
+
+- `static_scene_accumulated.ply`：整段静态点累计后的“完整场景”查看入口
+- `dynamic_window.ply`：最近几帧动态点的短窗口累计，避免全序列动态拖尾
+- `dynamic_instances/instance_*.ply`：按 `instance_id` 拆开的动态实例点云
+- `combined_scene.ply`：静态灰色 + 动态彩色的总览点云
+
+如果你想拖动时间条查看不同时间点的动态点云，不要对 `.ply` 做时间播放，而是直接读取 `replay_full/frames/frame_*.npz`：
+
+```bash
+python scripts/visualize_separation_timeline.py \
+  --frames_dir ${OUT_ROOT}/replay_smoke_full/frames \
+  --static_mode all \
+  --dynamic_mode window \
+  --dynamic_window 4 \
+  --color_mode rgb
+```
+
+补充说明：
+
+- `--static_mode all`：静态背景固定为全序列累计场景
+- `--static_mode upto`：静态背景会随着时间条逐步累积
+- `--static_mode current`：只看当前帧静态点
+- `--static_mode none`：只看动态点
+- `--color_mode semantic`：默认语义配色（兼容旧流程）
+- `--color_mode rgb`：优先使用真实 RGB；若旧 NPZ 不含 `*_colors_rgb` 字段会自动回退语义色
+
+关于“怎么看当前结果是否合理、什么时候该继续训练”的判断方法，请直接看：[`pointcloud_result_guide_zh.md`](./pointcloud_result_guide_zh.md)。
+
+如果你要看“数据集原始 RGB 外观”的稠密点云（而不是分离语义色），请看：[`rgbd_scene_guide_zh.md`](./rgbd_scene_guide_zh.md)。
 
 ### 7) 正式训练建议（24G 显存三档参数 + 实测高利用率档）
 
