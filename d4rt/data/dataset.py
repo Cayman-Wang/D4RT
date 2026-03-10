@@ -1,5 +1,8 @@
-"""
-Dataset for D4RT training with query sampling strategy
+"""Datasets used by D4RT.
+
+Project planning treats ``PointOdysseyDataset`` as the production path for
+train/test/export. ``D4RTDataset`` is kept only as a legacy/baseline path for
+older experiments and should not be used as the M3 acceptance reference.
 """
 
 import torch
@@ -37,7 +40,13 @@ utils = UtilsNamespace()
 
 class D4RTDataset(Dataset):
     """
-    Dataset for D4RT with query sampling strategy:
+    Legacy/baseline dataset with image-space query sampling.
+
+    This class remains for compatibility with earlier experiments. Current
+    training, testing, export, and replay flows should use
+    ``PointOdysseyDataset`` instead.
+
+    Query sampling strategy:
     - 30% queries on depth discontinuities or motion boundaries (Sobel operator)
     - 40% samples with t_tgt = t_cam
     - N=2048 queries per batch
@@ -229,6 +238,13 @@ class D4RTDataset(Dataset):
         )
 
 class PointOdysseyDataset(Dataset):
+    """Production dataset path for D4RT query supervision and export.
+
+    Query-level GT is defined in the ``t_cam`` camera frame during training.
+    World-frame conversion is deferred to ``scripts/export_separation_stream.py``
+    so replay, visualization, and mesh consumers can share a single boundary.
+    """
+
     def __init__(self,
                  dataset_location='/orion/group/point_odyssey',
                  dset='train',

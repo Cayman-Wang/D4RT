@@ -1,5 +1,7 @@
-"""
-PyTorch Lightning DataModule for D4RT
+"""PyTorch Lightning DataModules for D4RT.
+
+``PointOdysseyDataModule`` is the production path used by train/test/export.
+``D4RTDataModule`` is retained for legacy/baseline compatibility only.
 """
 
 import torch
@@ -36,7 +38,7 @@ def _resolve_loader_runtime_kwargs(
 
 
 class D4RTDataModule(L.LightningDataModule):
-    """PyTorch Lightning DataModule for D4RT"""
+    """Legacy/baseline DataModule for older D4RT experiments."""
     
     def __init__(
         self,
@@ -151,7 +153,7 @@ class D4RTDataModule(L.LightningDataModule):
 
 
 class PointOdysseyDataModule(L.LightningDataModule):
-    """PyTorch Lightning DataModule for PointOdysseyDataset"""
+    """Production DataModule for PointOdyssey-based train/test/export flows."""
     
     def __init__(
         self,

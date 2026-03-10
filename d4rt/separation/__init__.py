@@ -3,6 +3,7 @@
 from .io_contract import DynamicMeshInfo, SeparationFrame, load_frame_npz, save_frame_npz
 from .motion_score import MotionScoreCalculator, MotionScoreConfig, MotionScoreResult
 from .instance_tracker import DynamicInstanceTracker, TrackerConfig, TrackingResult
+from .mesh_builder import MeshBuilderConfig, SeparationMeshBuilder
 
 __all__ = [
     "DynamicMeshInfo",
@@ -15,4 +16,6 @@ __all__ = [
     "DynamicInstanceTracker",
     "TrackerConfig",
     "TrackingResult",
+    "MeshBuilderConfig",
+    "SeparationMeshBuilder",
 ]

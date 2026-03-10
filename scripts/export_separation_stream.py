@@ -1,4 +1,9 @@
-"""Export D4RT predictions to a separation replay stream NPZ."""
+"""Export D4RT predictions to a world-frame separation replay stream NPZ.
+
+Training query supervision stays in the dataset-provided ``t_cam`` frame.
+This script is the boundary that converts predictions into the shared
+world-frame replay contract consumed by replay, visualization, and mesh tools.
+"""
 
 from __future__ import annotations
 

@@ -2,13 +2,15 @@
 
 本文档用于判断 D4RT 在 `run_separation_replay.py` 之后输出的静态/动态点云结果是否合理，以及什么时候应该继续训练或扩大正式导出规模，而不是过早进入 mesh 调试。
 
+当前权威流程里，formal 门禁的最小必备证据是 `replay_full/summary.json + replay_full/frames/frame_*.npz`。`visualize_separation_sequence.py` 导出的 `*.ply` 和 `sequence_summary*.json` 只用于辅助人工查看，不是 formal replay 的必备产物。
+
 ## 1. 先看什么，不要先看什么
 
 先看：
+- `replay_full/summary.json`
 - `replay_full/frames/frame_*.npz` 的时间序列变化
-- `static_scene_accumulated.ply` 的完整静态场景
-- `dynamic_all_frames.ply` 与 `dynamic_window_last4.ply` 的动态点分布
-- `summary.json`、`sequence_summary.json`、`sequence_summary_all.json`
+- `visualize_separation_sequence.py` 按需导出的 `static_scene_accumulated.ply` / `dynamic_window_last4.ply` / `combined_scene_window_last4.ply`
+- 存在时再看 `sequence_summary*.json`
 
 不要只看：
 - 单帧 `frame_000000.npz`
@@ -21,10 +23,24 @@
 ### 2.1 看最终完整场景
 目标：确认完整静态场景有没有成形，动态轨迹整体是否合理。
 
-重点文件：
-- `replay_full/static_scene_accumulated.ply`
-- `replay_full/dynamic_all_frames.ply`
-- `replay_full/combined_scene_all_dynamic.ply`
+重点输入：
+- `replay_full/summary.json`
+- `replay_full/frames/frame_*.npz`
+
+如需把完整静态场景和动态窗口累计导出成 PLY，可先运行：
+
+```bash
+python scripts/visualize_separation_sequence.py \
+  --frames_dir outputs/d4rt_formal_sequence/nonquick_val64_authority_gpu/replay_full/frames \
+  --dynamic_mode window \
+  --dynamic_window 4 \
+  --color_mode rgb \
+  --export_static_ply outputs/d4rt_formal_sequence/nonquick_val64_authority_gpu/replay_full/static_scene_accumulated.ply \
+  --export_dynamic_ply outputs/d4rt_formal_sequence/nonquick_val64_authority_gpu/replay_full/dynamic_window_last4.ply \
+  --export_combined_ply outputs/d4rt_formal_sequence/nonquick_val64_authority_gpu/replay_full/combined_scene_window_last4.ply \
+  --export_summary_json outputs/d4rt_formal_sequence/nonquick_val64_authority_gpu/replay_full/sequence_summary_window4.json \
+  --backend none
+```
 
 ### 2.2 看分离效果
 目标：确认静态背景和动态目标是否被正确分开。
@@ -33,7 +49,7 @@
 
 ```bash
 python scripts/visualize_separation_timeline.py \
-  --frames_dir outputs/d4rt_formal_sequence/nonquick_val64_gpu/replay_full/frames \
+  --frames_dir outputs/d4rt_formal_sequence/nonquick_val64_authority_gpu/replay_full/frames \
   --static_mode all \
   --dynamic_mode window \
   --dynamic_window 4 \
@@ -53,7 +69,7 @@ python scripts/visualize_separation_timeline.py \
 
 ```bash
 python scripts/visualize_separation_timeline.py \
-  --frames_dir outputs/d4rt_formal_sequence/nonquick_val64_gpu/replay_full/frames \
+  --frames_dir outputs/d4rt_formal_sequence/nonquick_val64_authority_gpu/replay_full/frames \
   --static_mode upto \
   --dynamic_mode window \
   --dynamic_window 4
@@ -66,7 +82,7 @@ python scripts/visualize_separation_timeline.py \
 
 ```bash
 python scripts/visualize_separation_timeline.py \
-  --frames_dir outputs/d4rt_formal_sequence/nonquick_val64_gpu/replay_full/frames \
+  --frames_dir outputs/d4rt_formal_sequence/nonquick_val64_authority_gpu/replay_full/frames \
   --static_mode none \
   --dynamic_mode frame
 ```
@@ -87,8 +103,8 @@ python scripts/visualize_separation_timeline.py \
 - 墙面、地面、桌面、障碍物的大体结构能看出来。
 - 没有明显的“双层墙”、“整片漂移”、“厚重重影”。
 
-### 3.4 全序列动态轨迹大体合理
-- 看 `dynamic_all_frames.ply` 或 `combined_scene_all_dynamic.ply` 时，动态轨迹沿着一条合理路线分布。
+### 3.4 全序列或短窗口动态轨迹大体合理
+- 看 timeline 的 `dynamic_mode window/all`，或额外导出的动态/combined PLY 时，动态轨迹沿着一条合理路线分布。
 - 不应该出现“整场景到处洒点”的情况。
 
 ### 3.5 近邻窗口下仍能看到动态团块
@@ -114,14 +130,14 @@ python scripts/visualize_separation_timeline.py \
 - 当前结果更适合验证“分离逻辑跑通”，不适合做高质量 mesh。
 
 ### 4.3 静态场景只剩骨架，没有连续表面
-- `static_scene_accumulated.ply` 只有非常稀的点骨架。
+- `visualize_separation_timeline.py --static_mode all/upto` 或导出的 `static_scene_accumulated.ply` 里只有非常稀的点骨架。
 - 地面、墙面、桌面都不连续，缺口很多。
 
 说明：
 - 这通常不是 mesh builder 的问题，而是输入点云密度不够。
 
 ### 4.4 全序列动态像“红雾/拖带”
-- 看 `dynamic_all_frames.ply` 时，动态点不是沿着物体走，而是拉出很厚的拖尾。
+- 看 `dynamic_mode all` 或全序列累计的动态 PLY 时，动态点不是沿着物体走，而是拉出很厚的拖尾。
 - 每一帧的位置误差较大，导致累积后形成模糊带。
 
 说明：
@@ -139,8 +155,8 @@ python scripts/visualize_separation_timeline.py \
 
 重点看以下文件：
 - `replay_full/summary.json`
-- `replay_full/sequence_summary.json`
-- `replay_full/sequence_summary_all.json`
+- `replay_full/frames/frame_*.npz`
+- `replay_full/sequence_summary*.json`（仅当你显式运行 `visualize_separation_sequence.py --export_summary_json ...` 时存在）
 
 ### 5.1 `mean_active_tracks`
 - 越稳定越好。
@@ -158,28 +174,26 @@ python scripts/visualize_separation_timeline.py \
 - `window` 模式用于看“当前动态是否足够清楚”。
 - `all` 模式用于看“整段动态轨迹是否足够完整”。
 
-## 6. 对当前 `nonquick_val64_gpu` 结果的判读示例
+## 6. 对当前 authority replay 结果的判读示例
 
-当前正式输出位于：
-- `outputs/d4rt_formal_sequence/nonquick_val64_gpu/replay_full/summary.json`
-- `outputs/d4rt_formal_sequence/nonquick_val64_gpu/replay_full/sequence_summary.json`
-- `outputs/d4rt_formal_sequence/nonquick_val64_gpu/replay_full/sequence_summary_all.json`
+当前 authority 输出位于：
+- `outputs/d4rt_formal_sequence/nonquick_val64_authority_gpu/replay_full/summary.json`
+- `outputs/d4rt_formal_sequence/nonquick_val64_authority_gpu/replay_full/frames/frame_*.npz`
 
 当前统计：
-- `processed_frames = 512`
-- `total_static_points = 22091`
-- `total_dynamic_points = 8446`
-- `total_uncertain_points = 10935`
-- `mean_active_tracks = 0.998046875`
-- `static_downsampled_points = 10173`
-- `dynamic_downsampled_points(window,last4) = 94`
-- `dynamic_downsampled_points(all) = 6005`
+- `processed_frames = 256`
+- `total_static_points = 3734`
+- `total_dynamic_points = 1549`
+- `total_uncertain_points = 2141`
+- `mean_active_tracks = 0.0`
+- `dynamic_window_points(last4,total) = 24`
+- `dynamic_points_per_frame(max) = 16`
 
 这组结果更适合这样理解：
-- `M2 separation / replay` 已经跑通，时序跟踪也基本稳定。
-- 可以用来验证“动静分离逻辑是否合理”。
-- 但对“完整 mesh 是否足够好”来说，输入仍偏稀疏。
-- 尤其是最近窗口动态只有 `94` 个下采样点，这更像“可看趋势”，还不是“可做高质量 mesh”的输入密度。
+- `stream -> replay` 在 authority repo 内已经跑通，可以作为 `M3a mesh smoke` 的输入基线。
+- 但它还没有达到“情况 C”。`mean_active_tracks = 0.0` 说明当前 tracker 没有形成稳定实例流。
+- 最近窗口动态总点数只有 `24`，仍然更像“稀疏趋势信号”，不适合进入 `M3b` 的 mesh 质量阶段。
+- 结论：保留 `M3a mesh smoke`，优先继续训练或扩大正式导出规格，而不是继续调 mesh 质量。
 
 ## 7. 什么时候继续训练，什么时候先别急着训练
 
@@ -240,7 +254,7 @@ python scripts/visualize_separation_timeline.py \
 - 轨迹不乱飘
 
 结论：
-- 可以进入 mesh/M3 的最小闭环验证
+- 可以进入 `M3b Mesh Quality` 或更高质量的 mesh 阶段
 
 ## 9. 推荐默认查看命令
 
@@ -248,7 +262,7 @@ python scripts/visualize_separation_timeline.py \
 
 ```bash
 python scripts/visualize_separation_timeline.py \
-  --frames_dir outputs/d4rt_formal_sequence/nonquick_val64_gpu/replay_full/frames \
+  --frames_dir outputs/d4rt_formal_sequence/nonquick_val64_authority_gpu/replay_full/frames \
   --static_mode all \
   --dynamic_mode window \
   --dynamic_window 4
@@ -258,7 +272,7 @@ python scripts/visualize_separation_timeline.py \
 
 ```bash
 python scripts/visualize_separation_timeline.py \
-  --frames_dir outputs/d4rt_formal_sequence/nonquick_val64_gpu/replay_full/frames \
+  --frames_dir outputs/d4rt_formal_sequence/nonquick_val64_authority_gpu/replay_full/frames \
   --static_mode upto \
   --dynamic_mode window \
   --dynamic_window 4
@@ -268,7 +282,7 @@ python scripts/visualize_separation_timeline.py \
 
 ```bash
 python scripts/visualize_separation_timeline.py \
-  --frames_dir outputs/d4rt_formal_sequence/nonquick_val64_gpu/replay_full/frames \
+  --frames_dir outputs/d4rt_formal_sequence/nonquick_val64_authority_gpu/replay_full/frames \
   --static_mode none \
   --dynamic_mode frame
 ```

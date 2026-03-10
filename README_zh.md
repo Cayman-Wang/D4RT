@@ -67,6 +67,7 @@ D4RT/
 │   ├── separation/
 │   │   ├── motion_score.py
 │   │   ├── instance_tracker.py
+│   │   ├── mesh_builder.py
 │   │   └── io_contract.py
 │   ├── train.py
 │   └── test.py
@@ -75,6 +76,7 @@ D4RT/
 │   ├── test_d4rt.py
 │   ├── export_separation_stream.py
 │   ├── run_separation_replay.py
+│   ├── build_separation_meshes.py
 │   ├── visualize_separation_frame.py
 │   ├── visualize_separation_sequence.py
 │   ├── visualize_separation_timeline.py
@@ -189,6 +191,17 @@ python scripts/run_separation_replay.py \
   --output_dir ${OUT_ROOT}/replay_smoke_full
 ```
 
+### 4.5) 构建 M3a mesh smoke 结果
+
+> 该步骤只验证 replay -> mesh 的最小闭环，不代表已经达到高质量 mesh 阶段。
+> 默认会把 `instance_id=-1` 的动态点也作为 smoke 阶段的 fallback 实例流，避免稀疏 replay 时整条链路空跑。
+
+```bash
+python scripts/build_separation_meshes.py \
+  --frames_dir ${OUT_ROOT}/replay_smoke_full/frames \
+  --output_dir ${OUT_ROOT}/mesh_smoke
+```
+
 ### 5) 验收检查
 
 ```bash
@@ -196,6 +209,8 @@ ls -lh ${OUT_ROOT}/separation_stream_smoke.npz
 ls -lh ${OUT_ROOT}/replay_smoke_dry/summary.json
 ls -lh ${OUT_ROOT}/replay_smoke_full/summary.json
 ls ${OUT_ROOT}/replay_smoke_full/frames | head
+ls -lh ${OUT_ROOT}/mesh_smoke/mesh_summary.json
+find ${OUT_ROOT}/mesh_smoke/meshes -type f | head
 ```
 
 请在 `summary.json` 中重点确认：
@@ -249,7 +264,7 @@ python scripts/visualize_separation_frame.py \
   --backend auto
 ```
 
-如果你想看“序列级完整静态场景 + 动态分离效果”，不要只看单帧。新脚本会把多帧静态点累计到同一 world 坐标系，并支持把动态点按最近窗口或全序列累计后导出为 PLY：
+如果你想看“序列级完整静态场景 + 动态分离效果”，不要只看单帧。新脚本会把多帧静态点累计到同一 world 坐标系，并支持把动态点按最近窗口或全序列累计后导出为辅助查看文件：
 
 ```bash
 python scripts/visualize_separation_sequence.py \
@@ -259,10 +274,10 @@ python scripts/visualize_separation_sequence.py \
   --voxel_size 0.02 \
   --color_mode rgb \
   --export_static_ply ${OUT_ROOT}/replay_smoke_full/static_scene_accumulated.ply \
-  --export_dynamic_ply ${OUT_ROOT}/replay_smoke_full/dynamic_window.ply \
-  --export_combined_ply ${OUT_ROOT}/replay_smoke_full/combined_scene.ply \
+  --export_dynamic_ply ${OUT_ROOT}/replay_smoke_full/dynamic_window_last4.ply \
+  --export_combined_ply ${OUT_ROOT}/replay_smoke_full/combined_scene_window_last4.ply \
   --export_instances_dir ${OUT_ROOT}/replay_smoke_full/dynamic_instances \
-  --export_summary_json ${OUT_ROOT}/replay_smoke_full/sequence_summary.json \
+  --export_summary_json ${OUT_ROOT}/replay_smoke_full/sequence_summary_window4.json \
   --backend open3d
 ```
 
@@ -275,19 +290,22 @@ python scripts/visualize_separation_sequence.py \
   --dynamic_window 4 \
   --voxel_size 0.02 \
   --export_static_ply ${OUT_ROOT}/replay_smoke_full/static_scene_accumulated.ply \
-  --export_dynamic_ply ${OUT_ROOT}/replay_smoke_full/dynamic_window.ply \
-  --export_combined_ply ${OUT_ROOT}/replay_smoke_full/combined_scene.ply \
+  --export_dynamic_ply ${OUT_ROOT}/replay_smoke_full/dynamic_window_last4.ply \
+  --export_combined_ply ${OUT_ROOT}/replay_smoke_full/combined_scene_window_last4.ply \
   --export_instances_dir ${OUT_ROOT}/replay_smoke_full/dynamic_instances \
-  --export_summary_json ${OUT_ROOT}/replay_smoke_full/sequence_summary.json \
+  --export_summary_json ${OUT_ROOT}/replay_smoke_full/sequence_summary_window4.json \
   --backend none
 ```
+
+注意：`run_separation_replay.py` 的正式产物只有 `summary.json + frames/frame_*.npz`。上面这些 `*.ply` 和 `sequence_summary_window4.json` 都是 `visualize_separation_sequence.py` 的辅助导出，用于人工查看，不是 M2.5 / M3 门禁的最小必备证据。
 
 推荐默认理解：
 
 - `static_scene_accumulated.ply`：整段静态点累计后的“完整场景”查看入口
-- `dynamic_window.ply`：最近几帧动态点的短窗口累计，避免全序列动态拖尾
+- `dynamic_window_last4.ply`：最近几帧动态点的短窗口累计，避免全序列动态拖尾
 - `dynamic_instances/instance_*.ply`：按 `instance_id` 拆开的动态实例点云
-- `combined_scene.ply`：静态灰色 + 动态彩色的总览点云
+- `combined_scene_window_last4.ply`：静态灰色 + 动态彩色的总览点云
+- `sequence_summary_window4.json`：这次辅助导出的统计摘要，不等同于 `run_separation_replay.py` 的 `summary.json`
 
 如果你想拖动时间条查看不同时间点的动态点云，不要对 `.ply` 做时间播放，而是直接读取 `replay_full/frames/frame_*.npz`：
 
@@ -299,6 +317,13 @@ python scripts/visualize_separation_timeline.py \
   --dynamic_window 4 \
   --color_mode rgb
 ```
+
+如果你要检查 M3a 的 mesh smoke 产物，直接看下面这些真实存在的输出：
+
+- `${OUT_ROOT}/mesh_smoke/mesh_summary.json`
+- `${OUT_ROOT}/mesh_smoke/frames/frame_*.npz`（包含 `static_mesh_path` / `dynamic_meshes_json`）
+- `${OUT_ROOT}/mesh_smoke/meshes/static/*.ply`
+- `${OUT_ROOT}/mesh_smoke/meshes/dynamic/instance_*/dynamic_frame_*.ply`
 
 补充说明：
 
@@ -539,11 +564,22 @@ python scripts/run_separation_replay.py \
 - `summary.json`
 - `frames/frame_*.npz`（非 `--dry_run`）
 
+### `scripts/build_separation_meshes.py`
+
+输入：读取 `run_separation_replay.py` 导出的 `frames/frame_*.npz`。
+输出：
+
+- `mesh_summary.json`
+- `frames/frame_*.npz`（逻辑上回填 `static_mesh_path` 与 `dynamic_meshes`；NPZ 落盘字段为 `static_mesh_path` 与 `dynamic_meshes_json`）
+- `meshes/static/*.ply`
+- `meshes/dynamic/instance_*/dynamic_frame_*.ply`
+
 ## 测试场景与验收标准
 
 - 场景 A：GPU smoke（`max_epochs=1, S=4, N=96, num_queries=96, img_size=160`）能完整跑通三阶段流程。
 - 场景 B：`--dry_run --save_json` 仅生成统计 JSON，不生成逐帧 NPZ。
 - 场景 C：full-run 生成 `frames/frame_*.npz`。
+- 场景 E：`build_separation_meshes.py` 基于 replay 结果生成非空 static/dynamic mesh 文件。
 - 场景 D（CPU 兜底）：
   - 训练：将 `--accelerator gpu` 改为 `--accelerator cpu`
   - 导出：将 `--device auto` 改为 `--device cpu`
