@@ -7,6 +7,7 @@ import os
 import sys
 import torch
 import lightning as L
+from lightning.pytorch.callbacks import ModelCheckpoint
 
 # Add parent directory to path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -57,6 +58,7 @@ def main():
     parser.add_argument("--accelerator", type=str, default="gpu", help="Accelerator type")
     parser.add_argument("--precision", type=str, default="bf16-mixed", help="Precision")
     parser.add_argument("--gradient_clip_val", type=float, default=10.0, help="Gradient clipping L2 norm (10.0 as per D4RT paper)")
+    parser.add_argument("--checkpoint_every_n_train_steps", type=int, default=500, help="Save checkpoint every N train steps")
     
     # Loss weights
     parser.add_argument("--lambda_3d", type=float, default=1.0, help="3D loss weight")
@@ -71,6 +73,9 @@ def main():
     parser.add_argument("--log_dir", type=str, default="lightning_logs", help="Log directory")
     
     args = parser.parse_args()
+
+    if args.checkpoint_every_n_train_steps < 1:
+        raise ValueError("checkpoint_every_n_train_steps must be >= 1.")
     
     # Create data module using PointOdysseyDataset
     datamodule = PointOdysseyDataModule(
@@ -118,6 +123,16 @@ def main():
     )
     
     # Create trainer
+    checkpoint_callback = ModelCheckpoint(
+        dirpath=os.path.join(args.log_dir, 'checkpoints'),
+        filename='step-{step:08d}',
+        every_n_train_steps=args.checkpoint_every_n_train_steps,
+        save_top_k=-1,
+        save_last=True,
+        save_on_train_epoch_end=False,
+        auto_insert_metric_name=False,
+    )
+
     trainer_kwargs = {
         'accelerator': args.accelerator,
         'devices': args.devices,
@@ -129,6 +144,7 @@ def main():
         'enable_checkpointing': True,
         'enable_progress_bar': True,
         'enable_model_summary': True,
+        'callbacks': [checkpoint_callback],
     }
     
     # Configure validation only if use_val is True

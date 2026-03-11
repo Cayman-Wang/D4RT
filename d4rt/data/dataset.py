@@ -14,7 +14,7 @@ import cv2
 import os
 import glob
 import sys
-from PIL import Image
+from PIL import Image, UnidentifiedImageError
 from torchvision import transforms
 import random
 from scipy.ndimage import gaussian_filter
@@ -897,8 +897,12 @@ class PointOdysseyDataset(Dataset):
 
         normals = []
         for normal_path in normal_paths:
-            with Image.open(normal_path) as im:
-                normals.append(np.array(im)[:, :, :3])
+            try:
+                with Image.open(normal_path) as im:
+                    normals.append(np.array(im)[:, :, :3])
+            except (UnidentifiedImageError, OSError, ValueError) as exc:
+                print(f'warning: failed to load normal image {normal_path}: {exc}')
+                return None, False
 
         H,W,C = rgbs[0].shape
         assert(C==3)
