@@ -85,6 +85,8 @@ def main():
 
     if args.checkpoint_every_n_train_steps < 1:
         raise ValueError("checkpoint_every_n_train_steps must be >= 1.")
+    if args.max_steps <= args.warmup_steps:
+        raise ValueError("max_steps must be greater than warmup_steps.")
     
     # Create data module using PointOdysseyDataset
     datamodule = PointOdysseyDataModule(
@@ -146,6 +148,7 @@ def main():
         'accelerator': args.accelerator,
         'devices': args.devices,
         'max_epochs': args.max_epochs,
+        'max_steps': args.max_steps,
         'precision': args.precision,
         'gradient_clip_val': args.gradient_clip_val,
         'default_root_dir': args.log_dir,
