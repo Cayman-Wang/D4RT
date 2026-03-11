@@ -55,6 +55,15 @@ def main():
     parser.add_argument("--max_epochs", type=int, default=100, help="Maximum number of epochs")
     parser.add_argument("--devices", type=int, default=1, help="Number of devices")
     parser.add_argument("--accelerator", type=str, default="gpu", help="Accelerator type")
+    parser.add_argument(
+        "--strategy",
+        type=str,
+        default=None,
+        help=(
+            "Distributed strategy. When unset and using multi-GPU, defaults to "
+            "'ddp_find_unused_parameters_true' for compatibility."
+        ),
+    )
     parser.add_argument("--precision", type=str, default="bf16-mixed", help="Precision")
     parser.add_argument("--gradient_clip_val", type=float, default=10.0, help="Gradient clipping L2 norm (10.0 as per D4RT paper)")
     
@@ -131,6 +140,13 @@ def main():
         'enable_model_summary': True,
     }
     
+    # D4RT currently has conditionally-unused parameters under DDP.
+    # Lightning requires find_unused_parameters=True in this case.
+    if args.strategy is not None:
+        trainer_kwargs['strategy'] = args.strategy
+    elif args.accelerator == "gpu" and args.devices > 1:
+        trainer_kwargs['strategy'] = "ddp_find_unused_parameters_true"
+    
     # Configure validation only if use_val is True
     if args.use_val:
         trainer_kwargs['val_check_interval'] = 0.5
@@ -147,4 +163,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

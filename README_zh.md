@@ -350,6 +350,9 @@ export OUT_ROOT=outputs/d4rt_formal_${PROFILE}
 mkdir -p ${OUT_ROOT}
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
+# 多卡训练（如 --devices 2）建议加上，避免某些机器 NCCL 初始化后段错误
+export NCCL_SOCKET_IFNAME=lo
+
 python scripts/train_d4rt.py \
   --dataset_location ${DATA_ROOT} \
   --train_dset train \
@@ -373,6 +376,12 @@ python scripts/train_d4rt.py \
   --precision 16-mixed \
   --log_dir ${OUT_ROOT}/train
 ```
+
+多卡补充说明：
+
+- 如果你用双卡，把命令中的 `--devices 1` 改为 `--devices 2`。
+- `scripts/train_d4rt.py` 在 `--devices > 1` 且未显式传 `--strategy` 时，会自动使用 `ddp_find_unused_parameters_true`，以避免 DDP 的 unused parameters 报错。
+- 如需手动指定，可在训练命令里添加：`--strategy ddp_find_unused_parameters_true`。
 
 如需每个 epoch 做验证，可额外加上：`--val_dset val --use_val`（会略微降低训练吞吐）。
 

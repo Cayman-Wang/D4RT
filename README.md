@@ -90,6 +90,12 @@ python scripts/train_d4rt.py \
     --devices 1
 ```
 
+Multi-GPU notes:
+
+- For multi-GPU runs (e.g. `--devices 2`), set `NCCL_SOCKET_IFNAME=lo` to avoid NCCL init segfault on some machines.
+- `scripts/train_d4rt.py` now auto-selects `ddp_find_unused_parameters_true` when `--devices > 1` and `--strategy` is not set, avoiding DDP unused-parameters errors.
+- You can still set it manually with `--strategy ddp_find_unused_parameters_true`.
+
 ### Testing
 
 ```bash
@@ -130,4 +136,3 @@ Default model configuration:
 ## Citation
 
 If you use this code, please cite the D4RT paper.
-
